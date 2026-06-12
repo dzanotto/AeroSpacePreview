@@ -1,12 +1,16 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 
 /// Per-summon view state: which workspace tile is selected and the
 /// type-to-select buffer. Key events arrive from the panel via `handle`.
+/// Thumbnails arrive after presentation — the overlay shows placeholders
+/// until the capture pass finishes (~30 ms per window, serialized by SCK).
 @MainActor
 final class OverlayViewModel: ObservableObject {
     @Published private(set) var selectedWorkspace: String?
     @Published private(set) var typedPrefix = ""
+    @Published var thumbnails: [CGWindowID: CGImage] = [:]
 
     let content: OverlayContent
     let actions: OverlayActions

@@ -40,7 +40,7 @@ struct OverlayRootView: View {
             ForEach(snapshot.workspaces, id: \.name) { workspace in
                 WorkspaceTileView(
                     workspace: workspace,
-                    thumbnails: snapshot.thumbnails,
+                    thumbnails: viewModel.thumbnails,
                     isSelected: workspace.name == viewModel.selectedWorkspace,
                     actions: actions
                 )

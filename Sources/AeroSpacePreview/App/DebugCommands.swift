@@ -9,16 +9,17 @@ import UniformTypeIdentifiers
 enum DumpImagesCommand {
     static func run(outputDir: URL) async -> Int32 {
         do {
-            let snapshot = try AeroSpaceClient.discover().fetchSnapshot()
+            let snapshot = try await AeroSpaceClient.discover().fetchSnapshot()
             let windows = snapshot.allWindows
             try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
             let service = CaptureService()
             await service.warmUp()
 
+            let maxPixel = ProcessInfo.processInfo.environment["ASPV_MAXPIXEL"].flatMap(Int.init) ?? 640
             let clock = ContinuousClock()
             let start = clock.now
-            let images = await service.thumbnails(for: windows.map(\.id), maxPixel: 640)
+            let images = await service.thumbnails(for: windows.map(\.id), maxPixel: maxPixel)
             let elapsed = start.duration(to: clock.now)
 
             for window in windows {

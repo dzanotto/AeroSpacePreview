@@ -149,7 +149,7 @@ Distribution polish is deferred.
 |---|---|---|
 | R1 | AeroSpace `window-id` might not equal CGWindowID | ✅ **Verified**: every `aerospace list-windows` ID matched a `CGWindowListCopyWindowInfo` entry with the correct owning app (`spikes/r1_window_ids.swift`). |
 | R2 | ScreenCaptureKit may return blank frames for off-viewport windows of hidden workspaces | ✅ **Verified**: hidden-workspace windows capture with real, current content (`spikes/r2_capture.swift`). ~40–65 ms per capture after a ~370 ms first-capture warm-up — warm up the SCK session at app launch, not on first summon. |
-| R3 | Hyper+S may collide with an existing aerospace.toml binding | Open — check before first daily use; hotkey is a single constant. |
+| R3 | Hyper+S may collide with an existing aerospace.toml binding | ✅ **Verified** (M6, 2026-06-12): no Hyper/`cmd-ctrl-alt-shift` bindings in `~/.config/aerospace/aerospace.toml`. If registration ever fails, the app logs it and runs hotkey-less; the combination is a single constant in `AppDelegate.swift`. |
 | R4 | `aerospace focus --window-id` availability | ✅ **Verified** on 0.20.3-Beta, along with all `--format` interpolations used in §2. |
 | R5 | Capture latency with many windows (>20) | Mitigated by design (concurrent capture, downscaling, 250 ms timeout, placeholders); re-measure in M3. |
 

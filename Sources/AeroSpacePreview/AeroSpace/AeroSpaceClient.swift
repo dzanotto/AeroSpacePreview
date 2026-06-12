@@ -25,14 +25,26 @@ struct AeroSpaceClient: Sendable {
 
     // MARK: - Queries
 
-    func fetchSnapshot() throws -> AeroSpaceSnapshot {
-        let windowRows = try AeroSpaceParser.parseWindowRows(
-            run("list-windows", "--all", "--format", AeroSpaceParser.windowFormat)
-        )
-        let focusedWorkspace = try run("list-workspaces", "--focused", "--format", "%{workspace}")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+    func fetchSnapshot() async throws -> AeroSpaceSnapshot {
+        // Each CLI invocation costs tens of ms of process overhead (measured
+        // ~60-95 ms in M6); the three queries are independent, so run them
+        // concurrently — the snapshot costs one round-trip, not three.
+        let client = self
+        let windowsTask = Task.detached {
+            try client.run(["list-windows", "--all", "--format", AeroSpaceParser.windowFormat])
+        }
+        let focusedWorkspaceTask = Task.detached {
+            try client.run(["list-workspaces", "--focused", "--format", "%{workspace}"])
+        }
         // No focused window is a legal state (e.g. empty workspace).
-        let focusedWindowID = (try? run("list-windows", "--focused", "--format", "%{window-id}"))
+        let focusedWindowTask = Task.detached {
+            try? client.run(["list-windows", "--focused", "--format", "%{window-id}"])
+        }
+
+        let windowRows = try AeroSpaceParser.parseWindowRows(await windowsTask.value)
+        let focusedWorkspace = try await focusedWorkspaceTask.value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let focusedWindowID = await focusedWindowTask.value
             .flatMap { CGWindowID($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
         return AeroSpaceParser.buildSnapshot(
@@ -45,17 +57,17 @@ struct AeroSpaceClient: Sendable {
     // MARK: - Actions
 
     func switchToWorkspace(_ name: String) throws {
-        _ = try run("workspace", name)
+        _ = try run(["workspace", name])
     }
 
     func focusWindow(id: CGWindowID) throws {
-        _ = try run("focus", "--window-id", String(id))
+        _ = try run(["focus", "--window-id", String(id)])
     }
 
     // MARK: - Process plumbing
 
     @discardableResult
-    private func run(_ arguments: String...) throws -> String {
+    private func run(_ arguments: [String]) throws -> String {
         let commandLabel = "aerospace " + arguments.joined(separator: " ")
 
         let process = Process()

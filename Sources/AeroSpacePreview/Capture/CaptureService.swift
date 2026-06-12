@@ -4,6 +4,12 @@ import ScreenCaptureKit
 /// One-shot window thumbnail capture via ScreenCaptureKit.
 struct CaptureService: Sendable {
     var perWindowTimeout: Duration = .milliseconds(250)
+    /// SCK serializes much of the capture work internally; with dozens of
+    /// windows in flight at once, every capture's wall clock inflates and the
+    /// per-window timeout starts firing spuriously. Bounding the in-flight
+    /// count keeps the timeout meaning "this window is slow", not "the queue
+    /// is long".
+    var maxConcurrentCaptures = 8
 
     /// Captures a downscaled frame of each requested window concurrently.
     /// Windows that are missing from shareable content, time out, or fail are
@@ -15,21 +21,31 @@ struct CaptureService: Sendable {
             content.windows.map { ($0.windowID, UncheckedSendable($0)) },
             uniquingKeysWith: { first, _ in first }
         )
+        let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
 
         let timeout = perWindowTimeout
         return await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
-            for id in windowIDs {
-                guard let boxed = scWindows[id] else { continue }
-                group.addTask {
-                    let image = try? await withTimeout(timeout) {
-                        try await Self.capture(boxed.value, maxPixel: maxPixel)
-                    }
-                    return (id, image)
+            let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> (CGWindowID, CGImage?) in
+                let image = try? await withTimeout(timeout) {
+                    try await Self.capture(boxed.value, maxPixel: maxPixel)
                 }
+                return (id, image)
+            }
+
+            var next = 0
+            while next < min(maxConcurrentCaptures, targets.count) {
+                let (id, boxed) = targets[next]
+                group.addTask { await capture(id, boxed) }
+                next += 1
             }
             var result: [CGWindowID: CGImage] = [:]
             for await (id, image) in group {
                 if let image { result[id] = image }
+                if next < targets.count {
+                    let (id, boxed) = targets[next]
+                    group.addTask { await capture(id, boxed) }
+                    next += 1
+                }
             }
             return result
         }

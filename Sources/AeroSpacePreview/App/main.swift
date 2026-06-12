@@ -3,16 +3,22 @@ import Foundation
 
 // Debug entry point: print the AeroSpace snapshot as JSON and exit.
 if CommandLine.arguments.contains("--dump") {
-    do {
-        let snapshot = try AeroSpaceClient.discover().fetchSnapshot()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        print(String(data: try encoder.encode(snapshot), encoding: .utf8)!)
-        exit(0)
-    } catch {
-        FileHandle.standardError.write(Data("error: \(error)\n".utf8))
-        exit(1)
+    let done = DispatchSemaphore(value: 0)
+    nonisolated(unsafe) var exitCode: Int32 = 1
+    Task.detached {
+        do {
+            let snapshot = try await AeroSpaceClient.discover().fetchSnapshot()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(data: try encoder.encode(snapshot), encoding: .utf8)!)
+            exitCode = 0
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+        }
+        done.signal()
     }
+    done.wait()
+    exit(exitCode)
 }
 
 if let flagIndex = CommandLine.arguments.firstIndex(of: "--dump-images"),

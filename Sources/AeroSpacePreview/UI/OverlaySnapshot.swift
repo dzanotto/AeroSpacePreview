@@ -1,11 +1,15 @@
 import CoreGraphics
 
-/// Everything the overlay renders, assembled once per summon. Immutable —
-/// thumbnails are static while the overlay is open (capture-on-summon).
+/// The AeroSpace state the overlay renders, assembled once per summon.
+/// Immutable; thumbnails are published separately by the view model so the
+/// overlay can appear before captures finish (placeholders fill the gap).
 struct OverlaySnapshot: Sendable {
     let workspaces: [AeroSpaceWorkspace]
-    let thumbnails: [CGWindowID: CGImage]
     let permissionDenied: Bool
+
+    var allWindowIDs: [CGWindowID] {
+        workspaces.flatMap(\.windows).map(\.id)
+    }
 }
 
 enum OverlayContent: Sendable {

@@ -24,6 +24,8 @@ struct WorkspaceTileView: View {
             Text(workspace.name)
                 .font(.system(size: 15, weight: workspace.isFocused || isSelected ? .bold : .medium))
                 .foregroundStyle(workspace.isFocused ? Color.accentColor : .white.opacity(isSelected ? 1 : 0.85))
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .padding(.leading, 4)
 
             windowArea

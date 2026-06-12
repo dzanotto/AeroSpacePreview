@@ -23,10 +23,29 @@ final class OverlayController: NSObject, NSWindowDelegate {
         isLoading = true
         if client == nil { client = try? AeroSpaceClient.discover() }
 
+        // Present as soon as AeroSpace state is in (a few CLI round-trips);
+        // captures land afterwards (~30 ms/window, serialized by SCK — see
+        // M6 measurements in PLAN.md). Placeholders cover the gap.
         Task { [client, capture] in
-            let content = await Self.loadContent(client: client, capture: capture)
-            self.present(content)
+            let clock = ContinuousClock()
+            let start = clock.now
+            let content = await Self.loadState(client: client)
+            let viewModel = self.present(content)
             self.isLoading = false
+
+            guard let viewModel,
+                  case .snapshot(let snapshot) = content,
+                  !snapshot.permissionDenied else { return }
+            let stateDone = clock.now
+            let windowIDs = snapshot.allWindowIDs
+            let thumbnails = await capture.thumbnails(for: windowIDs, maxPixel: 640)
+            viewModel.thumbnails = thumbnails
+            NSLog(
+                "AeroSpacePreview: summon — state %.0f ms, capture %.0f ms (%ld/%ld windows)",
+                start.duration(to: stateDone) / .milliseconds(1),
+                stateDone.duration(to: clock.now) / .milliseconds(1),
+                thumbnails.count, windowIDs.count
+            )
         }
     }
 
@@ -44,25 +63,17 @@ final class OverlayController: NSObject, NSWindowDelegate {
         })
     }
 
-    // MARK: - Snapshot assembly (off the main actor; CLI calls block briefly)
+    // MARK: - State assembly (off the main actor; CLI calls block briefly)
 
-    private nonisolated static func loadContent(
-        client: AeroSpaceClient?,
-        capture: CaptureService
-    ) async -> OverlayContent {
+    private nonisolated static func loadState(client: AeroSpaceClient?) async -> OverlayContent {
         guard let client else {
             return .error("aerospace CLI not found.\nIs AeroSpace installed? (brew install --cask nikitabobko/tap/aerospace)")
         }
         do {
-            let snapshot = try client.fetchSnapshot()
-            let permissionDenied = !ScreenRecordingPermission.isGranted
-            let thumbnails = permissionDenied
-                ? [:]
-                : await capture.thumbnails(for: snapshot.allWindows.map(\.id), maxPixel: 640)
+            let snapshot = try await client.fetchSnapshot()
             return .snapshot(OverlaySnapshot(
                 workspaces: snapshot.workspaces,
-                thumbnails: thumbnails,
-                permissionDenied: permissionDenied
+                permissionDenied: !ScreenRecordingPermission.isGranted
             ))
         } catch {
             return .error(String(describing: error))
@@ -71,8 +82,9 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     // MARK: - Presentation
 
-    private func present(_ content: OverlayContent) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+    @discardableResult
+    private func present(_ content: OverlayContent) -> OverlayViewModel? {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return nil }
 
         let actions = OverlayActions(
             dismiss: { [weak self] in self?.hide() },
@@ -92,6 +104,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             context.duration = 0.12
             panel.animator().alphaValue = 1
         }
+        return viewModel
     }
 
     /// Runs an aerospace action off the main actor and dismisses immediately —

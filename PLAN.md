@@ -78,25 +78,106 @@ were one-liners; M5 is keyboard navigation + selection model.)
 
 **Exit criteria**: full loop usable daily without touching the mouse; mouse-only also works.
 
-## M6 — Polish & hardening (M)
+## M6 — Polish & hardening (M) ✅ CODE DONE 2026-06-12 (exit criterion: a week of daily-driving)
 
 - Re-entrancy: hotkey while overlay open = dismiss; ignore summon while a snapshot is loading.
-- Edge cases: 0 occupied workspaces, 1 workspace, >30 windows, very long titles/names,
-  window closed between snapshot and click (action fails silently + dismiss).
-- Performance pass on summon latency (measure, then tune capture resolution/concurrency).
-- README: build instructions, permission setup, hotkey note (R3), AeroSpace version tested.
-- `git init` + sensible `.gitignore` (if not done at M1 — do it at M1).
+  (Both already held from M1/M4 guards — verified by inspection, no changes needed.)
+- Edge cases: 0 occupied workspaces and 1 workspace were already covered (parser tests);
+  added: workspace-name label truncation for very long names; bounded capture concurrency
+  (8 in flight) so >30 windows can't trip the 250 ms per-window timeout spuriously.
+  Window-closed-between-snapshot-and-click already failed silently + dismissed.
+- Performance pass (measured on the dev machine, 7–8 windows):
+  - Captures cost ~30 ms/window and are **serialized inside ScreenCaptureKit** — resolution
+    (320/640/1280 maxPixel: no difference) and concurrency are not levers. The <150 ms
+    full-capture target is unreachable for 10+ windows.
+  - Fix: **present-first summon** — overlay appears as soon as CLI state is in; thumbnails
+    are published separately by the view model and pop in when captures land (placeholders
+    cover the gap). This is also the thumbnail plumbing M9 needs.
+  - CLI state fetch was 170–290 ms (3 sequential invocations à ~60–95 ms); now the three
+    queries run concurrently → ~100 ms wall clock to overlay-visible.
+  - Each summon NSLogs `state X ms, capture Y ms (n/m windows)` for ongoing measurement.
+- README written (build, permissions, hotkey/R3, AeroSpace 0.20.3-Beta, debug flags);
+  R3 closed in SPEC §7 (no Hyper bindings in aerospace.toml, checked 2026-06-12).
+- `git init` + `.gitignore` were done at M1.
 
-**Exit criteria**: a week of daily-driving without crashes or stuck overlays.
+**Exit criteria**: a week of daily-driving without crashes or stuck overlays — in progress
+from 2026-06-12; watch the summon timing NSLogs.
+
+## M7 — Layout-faithful previews via frame caching (L)
+
+Replaces the uniform thumbnail grid inside a tile with a miniature of the workspace's real
+tiled layout, for every workspace we've seen at least once. (SPEC §1 rationale + §6.2.)
+
+- **Frame source — piggyback on SCK**: `SCWindow.frame` is already available from the
+  `SCShareableContent` lookup `CaptureService` does on every summon — no new API, no new
+  permission. Frames are only real for the *currently visible* workspace (hidden ones are
+  stacked off-viewport, per M0), so harvest only windows of the focused workspace.
+- **Harvest moments**:
+  1. On every summon (focused workspace's frames are accurate at that instant).
+  2. ~300 ms after the overlay switches workspace, run a background harvest
+     (`list-windows --focused` + one `SCShareableContent` call) so the newly revealed
+     workspace gets cached — normal use of the app populates the cache by itself.
+  3. Stretch (opt-in, documented not wired): `exec-on-workspace-change` in aerospace.toml
+     pinging the app for harvest-on-every-switch even outside the overlay.
+- **`FrameCacheStore`** (new, in `Capture/` or its own `Layout/`): workspace name →
+  `[CGWindowID: CGRect]` normalized to the monitor frame, plus a timestamp. In-memory first;
+  JSON persistence in Application Support as a stretch goal (windowIDs die with the owning
+  apps, so persistence helps only across *our* restarts — validate before use).
+- **Validation rule**: a tile uses the cached layout only if the cached windowID set equals
+  the workspace's current window set; any mismatch (window opened/closed while hidden) falls
+  back to the existing uniform grid for that tile. Simple and predictable; no partial hybrids.
+- **Rendering**: `WorkspaceLayoutView` alongside the grid in `WorkspaceTileView.swift` —
+  scale the monitor rect into the tile, position thumbnails at their normalized frames.
+  The focused workspace always renders layout-faithful (its frames are always fresh).
+- Unit tests: normalization round-trip, validation rule, grid fallback selection.
+
+**Exit criteria**: focused + previously visited workspaces render as miniature layouts;
+a never-visited workspace falls back to the grid; opening/closing a window on a hidden
+workspace falls back to the grid instead of showing a wrong layout.
+
+## M8 — Menu bar icon (S)
+
+The app is `LSUIElement` — today there is no way to see it's running or quit it without
+`kill`. Small, independent; can be slotted before or in parallel with M7.
+
+- `NSStatusItem` with a template SF Symbol (e.g. `square.grid.2x2`), menu:
+  - "Show Workspace Preview  ⌘⌃⌥⇧S" → toggles the overlay (same path as the hotkey).
+  - "Launch at Login" checkbox via `SMAppService.mainApp`.
+  - "About AeroSpacePreview" (version from the bundle) and "Quit".
+- Lives in `App/StatusItemController.swift`; AppDelegate owns it next to `HotKeyManager`.
+
+**Exit criteria**: icon visible, all four menu actions work, login item survives reboot.
+
+## M9 — Live thumbnails while the overlay is open (M)
+
+- **Approach: periodic re-capture, not `SCStream`.** One stream per window means N live
+  streams with real resource limits and lifecycle complexity; the existing one-shot path
+  captures ~40–65 ms/window concurrently (M0), so refreshing 10 windows comfortably fits a
+  1 s tick. Reuse `CaptureService.thumbnails(for:maxPixel:)` unchanged.
+- Refresh loop owned by `OverlayController`/`OverlayViewModel`: start after the first
+  snapshot is published, tick at 1 Hz, cancel on dismiss. Skip a tick if the previous pass
+  is still in flight. Drop to 0.5 Hz above ~20 windows.
+- Publish thumbnail updates without rebuilding `OverlaySnapshot`: split thumbnails into a
+  separately published dictionary the tiles observe (snapshot stays immutable for
+  workspaces/focus/layout; only pixels refresh).
+- A failed re-capture keeps the last good frame — never flash back to a placeholder.
+- The AeroSpace state (window set, focus) stays static while open — refreshing pixels only.
+  Re-fetching state live is out of scope.
+
+**Exit criteria**: a video playing on a hidden workspace visibly updates in the open
+overlay; no flicker; CPU while open stays acceptable (measure; tune rate/resolution if not).
 
 ## Deferred (tracked, not planned)
 
-Multi-monitor → layout-faithful previews (frame caching) → config file → menu bar icon →
-live thumbnails → drag-and-drop → notarized releases. See SPEC.md §6.
+Config file (TOML) → multi-monitor → drag-and-drop → notarized releases. See SPEC.md §6.
 
 ## Order & dependencies
 
 ```
-M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6
+M0 ─► M1 ─► M2 ─► M3 ─► M4 ─► M5 ─► M6 ─► M7 ─► M9
+            │                          └── M8 is independent (any time after M1)
             └── M2 and M3 are independent after M1; can be built in either order
 ```
+
+M7 before M9: live refresh should land on top of the final tile rendering (layout view),
+not the grid it replaces.
