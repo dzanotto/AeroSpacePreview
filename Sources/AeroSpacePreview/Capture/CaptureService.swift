@@ -3,52 +3,73 @@ import ScreenCaptureKit
 
 /// One-shot window thumbnail capture via ScreenCaptureKit.
 struct CaptureService: Sendable {
-    var perWindowTimeout: Duration = .milliseconds(250)
-    /// SCK serializes much of the capture work internally; with dozens of
-    /// windows in flight at once, every capture's wall clock inflates and the
-    /// per-window timeout starts firing spuriously. Bounding the in-flight
-    /// count keeps the timeout meaning "this window is slow", not "the queue
-    /// is long".
-    var maxConcurrentCaptures = 8
+    /// Generous: the overlay never blocks on a capture (placeholders fill in),
+    /// so the timeout only decides when to give up on a stuck window. M6
+    /// measurement: 250 ms was tight enough that the back of a 9-window queue
+    /// timed out spuriously.
+    var perWindowTimeout: Duration = .milliseconds(600)
+    /// SCK serializes much of the capture work internally; with many windows
+    /// in flight at once, every capture's wall clock inflates (the timeout
+    /// timer ticks while the capture waits its turn) and per-window timeouts
+    /// fire spuriously. Keeping the in-flight count small makes the timeout
+    /// mean "this window is slow", not "the queue is long" — and costs no
+    /// throughput, since SCK serializes anyway (~30 ms/window regardless).
+    var maxConcurrentCaptures = 4
 
-    /// Captures a downscaled frame of each requested window concurrently.
-    /// Windows that are missing from shareable content, time out, or fail are
-    /// simply absent from the result — callers render placeholders for them.
-    func thumbnails(for windowIDs: [CGWindowID], maxPixel: Int) async -> [CGWindowID: CGImage] {
-        guard let content = try? await SCShareableContent
-            .excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return [:] }
-        let scWindows = Dictionary(
-            content.windows.map { ($0.windowID, UncheckedSendable($0)) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
-
+    /// Captures a downscaled frame of each requested window concurrently,
+    /// yielding each thumbnail as soon as its capture completes (captures
+    /// begin eagerly, before the stream is consumed). Windows that are
+    /// missing from shareable content, time out, or fail are simply never
+    /// yielded — callers render placeholders for them.
+    func thumbnailStream(for windowIDs: [CGWindowID], maxPixel: Int) -> AsyncStream<(CGWindowID, CGImage)> {
         let timeout = perWindowTimeout
-        return await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
-            let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> (CGWindowID, CGImage?) in
-                let image = try? await withTimeout(timeout) {
-                    try await Self.capture(boxed.value, maxPixel: maxPixel)
-                }
-                return (id, image)
-            }
+        let maxConcurrent = maxConcurrentCaptures
+        return AsyncStream { continuation in
+            let task = Task {
+                defer { continuation.finish() }
+                guard let content = try? await SCShareableContent
+                    .excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
+                let scWindows = Dictionary(
+                    content.windows.map { ($0.windowID, UncheckedSendable($0)) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
 
-            var next = 0
-            while next < min(maxConcurrentCaptures, targets.count) {
-                let (id, boxed) = targets[next]
-                group.addTask { await capture(id, boxed) }
-                next += 1
-            }
-            var result: [CGWindowID: CGImage] = [:]
-            for await (id, image) in group {
-                if let image { result[id] = image }
-                if next < targets.count {
-                    let (id, boxed) = targets[next]
-                    group.addTask { await capture(id, boxed) }
-                    next += 1
+                await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
+                    let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> (CGWindowID, CGImage?) in
+                        let image = try? await withTimeout(timeout) {
+                            try await Self.capture(boxed.value, maxPixel: maxPixel)
+                        }
+                        return (id, image)
+                    }
+
+                    var next = 0
+                    while next < min(maxConcurrent, targets.count) {
+                        let (id, boxed) = targets[next]
+                        group.addTask { await capture(id, boxed) }
+                        next += 1
+                    }
+                    for await (id, image) in group {
+                        if let image { continuation.yield((id, image)) }
+                        if next < targets.count {
+                            let (id, boxed) = targets[next]
+                            group.addTask { await capture(id, boxed) }
+                            next += 1
+                        }
+                    }
                 }
             }
-            return result
+            continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// Batch variant: all thumbnails at once (used by `--dump-images`).
+    func thumbnails(for windowIDs: [CGWindowID], maxPixel: Int) async -> [CGWindowID: CGImage] {
+        var result: [CGWindowID: CGImage] = [:]
+        for await (id, image) in thumbnailStream(for: windowIDs, maxPixel: maxPixel) {
+            result[id] = image
+        }
+        return result
     }
 
     /// The first ScreenCaptureKit capture of a process pays a ~370 ms session

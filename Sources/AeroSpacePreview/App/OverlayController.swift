@@ -24,27 +24,37 @@ final class OverlayController: NSObject, NSWindowDelegate {
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
-        // captures land afterwards (~30 ms/window, serialized by SCK — see
-        // M6 measurements in PLAN.md). Placeholders cover the gap.
+        // captures start at the same moment and stream in one by one
+        // (~30 ms/window, serialized by SCK — see M6 measurements in
+        // PLAN.md). Placeholders cover whatever hasn't landed yet.
         Task { [client, capture] in
             let clock = ContinuousClock()
             let start = clock.now
             let content = await Self.loadState(client: client)
+
+            var stream: AsyncStream<(CGWindowID, CGImage)>?
+            var windowCount = 0
+            if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
+                let windowIDs = snapshot.allWindowIDs
+                windowCount = windowIDs.count
+                stream = capture.thumbnailStream(for: windowIDs, maxPixel: 640)
+            }
+            let stateDone = clock.now
+
             let viewModel = self.present(content)
             self.isLoading = false
 
-            guard let viewModel,
-                  case .snapshot(let snapshot) = content,
-                  !snapshot.permissionDenied else { return }
-            let stateDone = clock.now
-            let windowIDs = snapshot.allWindowIDs
-            let thumbnails = await capture.thumbnails(for: windowIDs, maxPixel: 640)
-            viewModel.thumbnails = thumbnails
+            guard let stream, let viewModel else { return }
+            var captured = 0
+            for await (id, image) in stream {
+                viewModel.thumbnails[id] = image
+                captured += 1
+            }
             NSLog(
                 "AeroSpacePreview: summon — state %.0f ms, capture %.0f ms (%ld/%ld windows)",
                 start.duration(to: stateDone) / .milliseconds(1),
                 stateDone.duration(to: clock.now) / .milliseconds(1),
-                thumbnails.count, windowIDs.count
+                captured, windowCount
             )
         }
     }

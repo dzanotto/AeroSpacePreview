@@ -81,6 +81,7 @@ struct WindowThumbnailView: View {
                 placeholderCard
             }
         }
+        .animation(.easeOut(duration: 0.12), value: image == nil)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)

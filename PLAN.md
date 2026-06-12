@@ -84,15 +84,18 @@ were one-liners; M5 is keyboard navigation + selection model.)
   (Both already held from M1/M4 guards — verified by inspection, no changes needed.)
 - Edge cases: 0 occupied workspaces and 1 workspace were already covered (parser tests);
   added: workspace-name label truncation for very long names; bounded capture concurrency
-  (8 in flight) so >30 windows can't trip the 250 ms per-window timeout spuriously.
+  (4 in flight, 600 ms per-window timeout — at 8/250 ms the back of a 9-window queue
+  timed out spuriously because SCK serializes and the timer ticks while queued).
   Window-closed-between-snapshot-and-click already failed silently + dismissed.
 - Performance pass (measured on the dev machine, 7–8 windows):
   - Captures cost ~30 ms/window and are **serialized inside ScreenCaptureKit** — resolution
     (320/640/1280 maxPixel: no difference) and concurrency are not levers. The <150 ms
     full-capture target is unreachable for 10+ windows.
-  - Fix: **present-first summon** — overlay appears as soon as CLI state is in; thumbnails
-    are published separately by the view model and pop in when captures land (placeholders
-    cover the gap). This is also the thumbnail plumbing M9 needs.
+  - Fix: **present-first summon** — overlay appears as soon as CLI state is in; captures
+    start in parallel with presentation and stream in progressively, one thumbnail at a
+    time (`CaptureService.thumbnailStream`, published per-window by the view model with a
+    short crossfade). Placeholders cover whatever hasn't landed. This is also the
+    thumbnail plumbing M9 needs.
   - CLI state fetch was 170–290 ms (3 sequential invocations à ~60–95 ms); now the three
     queries run concurrently → ~100 ms wall clock to overlay-visible.
   - Each summon NSLogs `state X ms, capture Y ms (n/m windows)` for ongoing measurement.
