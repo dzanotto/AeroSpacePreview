@@ -62,6 +62,20 @@ natural sort order. Thumbnails are one-shot captures taken on summon; the overla
 as soon as AeroSpace state is in (~100 ms) and thumbnails pop in as captures complete
 (~30 ms per window, serialized inside ScreenCaptureKit).
 
+### Layout previews
+
+Tiles render a miniature of the workspace's real tiled layout when the app has seen that
+workspace at least once: window frames are cached on every summon and again ~300 ms after
+you switch workspace through the overlay, so normal use populates the cache by itself.
+A tile falls back to a uniform thumbnail grid when no trustworthy layout exists — the
+workspace hasn't been visible since the app launched, or its window set changed while it
+was hidden. The cache is in-memory only; a restart starts over from grids.
+
+If you want the cache to also pick up workspace switches made *outside* the overlay
+(plain `alt-1`-style bindings), a future `exec-on-workspace-change` hook in
+`aerospace.toml` could ping the app to harvest on every switch — documented as a stretch
+goal in PLAN.md M7, not wired up yet.
+
 ## Debug flags
 
 ```sh
@@ -80,4 +94,4 @@ Each summon logs a timing line via NSLog (`make dev` to see it):
   then `$PATH`.
 
 See [SPEC.md](SPEC.md) for the full specification and [PLAN.md](PLAN.md) for the milestone
-history and roadmap (layout-faithful previews, menu bar icon, live thumbnails are next).
+history and roadmap (menu bar icon and live thumbnails are next).

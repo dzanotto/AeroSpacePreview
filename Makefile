@@ -6,10 +6,13 @@ APP_NAME := AeroSpacePreview
 BUNDLE   := build/$(APP_NAME).app
 BINARY   := .build/release/$(APP_NAME)
 
-.PHONY: build bundle run dev clean
+.PHONY: build bundle run dev test clean
 
 build:
 	xcrun swift build -c release
+
+test:
+	xcrun swift test
 
 bundle: build
 	rm -rf $(BUNDLE)

@@ -54,6 +54,23 @@ struct AeroSpaceClient: Sendable {
         )
     }
 
+    /// The focused workspace and its window IDs — the minimal query for a
+    /// layout harvest after a workspace switch (M7).
+    func fetchFocusedWorkspaceWindows() async throws -> (workspace: String, windowIDs: [CGWindowID]) {
+        let client = self
+        let workspaceTask = Task.detached {
+            try client.run(["list-workspaces", "--focused", "--format", "%{workspace}"])
+        }
+        let windowsTask = Task.detached {
+            try client.run(["list-windows", "--workspace", "focused", "--format", "%{window-id}"])
+        }
+        let workspace = try await workspaceTask.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let windowIDs = try await windowsTask.value
+            .split(separator: "\n")
+            .compactMap { CGWindowID($0.trimmingCharacters(in: .whitespaces)) }
+        return (workspace, windowIDs)
+    }
+
     // MARK: - Actions
 
     func switchToWorkspace(_ name: String) throws {

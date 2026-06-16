@@ -29,12 +29,15 @@ so Mission Control shows nothing useful. This app fills that gap.
     when the overlay is summoned (static while open).
   - A **focused-workspace highlight**: the focused workspace tile gets a distinct accent
     border; the focused window inside it is also subtly marked.
-- Thumbnail layout inside a tile: windows are arranged in a uniform grid within the tile,
-  preserving each window's aspect ratio.
-  - *Rationale*: AeroSpace hides non-visible workspaces by moving their windows off-viewport,
-    so the real tiled frames of hidden workspaces are not recoverable from current window
-    bounds. Reconstructing true layouts (by caching frames when a workspace is visible) is a
-    future enhancement (§6).
+- Thumbnail layout inside a tile (since M7): a miniature of the workspace's real tiled
+  layout, positioned from window frames cached the last time the workspace was visible
+  (harvested on every summon, and ~300 ms after the overlay switches workspace). A tile
+  falls back to a uniform aspect-preserving grid when no trustworthy layout exists: the
+  workspace was never seen, Screen Recording is denied, or its window set changed while
+  hidden (a cached layout is used only on an exact windowID-set match — no partial hybrids).
+  - *Rationale for caching*: AeroSpace hides non-visible workspaces by moving their windows
+    off-viewport, so the real tiled frames of hidden workspaces are not recoverable from
+    current window bounds — only from frames observed while the workspace was visible.
 
 ### Interaction
 - **Click a workspace tile** (background area) → `aerospace workspace <name>`, dismiss.
@@ -123,7 +126,6 @@ Layers and dependencies (one direction only): `UI → ViewModel → {AeroSpaceCl
 - Multi-monitor (single focused monitor only; the data model keeps a `monitor` field so this
   can be added without reshaping).
 - Live/streaming thumbnails, drag-and-drop of windows between workspaces.
-- Faithful tiling-layout reconstruction for hidden workspaces.
 - Config file, hotkey customization UI, menu bar icon.
 - Distribution: signing with a Developer ID, notarization, Homebrew. (Architecture stays
   release-clean; see Scope.)
@@ -137,8 +139,9 @@ Distribution polish is deferred.
 ## 6. Future enhancements (explicitly out of v1)
 
 1. Multi-monitor: per-monitor overlay with that monitor's workspaces.
-2. Layout-faithful previews: cache window frames whenever a workspace is visible
-   (via `exec-on-workspace-change` callback or polling) and use them for hidden workspaces.
+2. ~~Layout-faithful previews~~ — shipped in M7. Remaining stretch pieces: persisting the
+   frame cache across app restarts, and an `exec-on-workspace-change` hook so harvesting
+   also happens outside the overlay (documented in README, not wired).
 3. Config file (TOML, like AeroSpace) for hotkey, shown workspaces, theming.
 4. Menu bar icon, live thumbnails, drag windows between workspaces.
 5. Signed/notarized releases + Homebrew cask.
@@ -155,7 +158,8 @@ Distribution polish is deferred.
 
 ### M0 findings that bind the implementation
 - Hidden-workspace window bounds confirm AeroSpace stacks them off-viewport (all at the same
-  corner coordinates) — the grid-thumbnail layout decision in §1 stands.
+  corner coordinates) — hence the frame cache + grid fallback design in §1: hidden-workspace
+  layouts come only from frames observed while visible.
 - `SCContentFilter(desktopIndependentWindow:)` crashes in a process without a window-server
   connection; a real `NSApplication`-based app is fine, but any CLI test harness must touch
   `NSApplication.shared` first.

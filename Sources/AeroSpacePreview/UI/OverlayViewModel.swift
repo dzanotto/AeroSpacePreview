@@ -11,6 +11,11 @@ final class OverlayViewModel: ObservableObject {
     @Published private(set) var selectedWorkspace: String?
     @Published private(set) var typedPrefix = ""
     @Published var thumbnails: [CGWindowID: CGImage] = [:]
+    /// Workspace name → validated miniature layout. Tiles without an entry
+    /// render the uniform grid. Seeded from the frame cache at presentation;
+    /// the focused workspace's entry refreshes when its summon-time frames
+    /// arrive with the capture stream.
+    @Published var layouts: [String: WorkspaceLayout] = [:]
 
     let content: OverlayContent
     let actions: OverlayActions

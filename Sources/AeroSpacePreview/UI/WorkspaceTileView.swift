@@ -4,6 +4,8 @@ import SwiftUI
 struct WorkspaceTileView: View {
     let workspace: AeroSpaceWorkspace
     let thumbnails: [CGWindowID: CGImage]
+    /// Validated miniature layout, or nil → uniform grid fallback.
+    let layout: WorkspaceLayout?
     let isSelected: Bool
     let actions: OverlayActions
 
@@ -51,6 +53,13 @@ struct WorkspaceTileView: View {
                 .font(.system(size: 13))
                 .foregroundStyle(.white.opacity(0.35))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let layout {
+            WorkspaceLayoutView(
+                workspace: workspace,
+                layout: layout,
+                thumbnails: thumbnails,
+                actions: actions
+            )
         } else {
             let columns = Int(Double(workspace.windows.count).squareRoot().rounded(.up))
             LazyVGrid(
@@ -67,16 +76,52 @@ struct WorkspaceTileView: View {
     }
 }
 
+/// Miniature of the workspace's real tiled layout: each thumbnail placed at
+/// its cached display-relative frame, letterboxed to the display's aspect
+/// inside the (16:10) tile area. Only rendered with a validated layout, so
+/// every window has a frame.
+struct WorkspaceLayoutView: View {
+    let workspace: AeroSpaceWorkspace
+    let layout: WorkspaceLayout
+    let thumbnails: [CGWindowID: CGImage]
+    let actions: OverlayActions
+
+    var body: some View {
+        GeometryReader { geo in
+            let box = LayoutMath.letterbox(aspect: layout.displayAspect, in: geo.size)
+            ForEach(workspace.windows, id: \.id) { window in
+                if let unit = layout.frames[window.id] {
+                    WindowThumbnailView(
+                        window: window,
+                        image: thumbnails[window.id],
+                        fillsCell: true
+                    )
+                    .frame(width: unit.width * box.width, height: unit.height * box.height)
+                    .position(
+                        x: box.minX + unit.midX * box.width,
+                        y: box.minY + unit.midY * box.height
+                    )
+                    .onTapGesture { actions.focusWindow(window.id) }
+                }
+            }
+        }
+        .clipped()
+    }
+}
+
 struct WindowThumbnailView: View {
     let window: AeroSpaceWindow
     let image: CGImage?
+    /// In the layout miniature the cell already has the window's shape — the
+    /// content stretches to fill it. In the uniform grid the content sizes
+    /// itself (fit, 16:10 placeholder).
+    var fillsCell = false
 
     var body: some View {
         Group {
             if let image {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .scaledToFit()
+                let img = Image(decorative: image, scale: 1).resizable()
+                if fillsCell { img } else { img.scaledToFit() }
             } else {
                 placeholderCard
             }
@@ -110,6 +155,6 @@ struct WindowThumbnailView: View {
             }
             .padding(6)
         }
-        .aspectRatio(16 / 10, contentMode: .fit)
+        .aspectRatio(fillsCell ? nil : 16 / 10, contentMode: .fit)
     }
 }

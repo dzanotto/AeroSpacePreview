@@ -1,6 +1,23 @@
 import CoreGraphics
 import ScreenCaptureKit
 
+/// Window frames + display bounds from one SCShareableContent lookup, in
+/// global top-left-origin coordinates: the raw material for layout caching
+/// (M7). Frames are only meaningful for windows currently on a visible
+/// workspace — hidden ones are stacked off-viewport.
+struct WindowFrameHarvest: Sendable {
+    let frames: [CGWindowID: CGRect]
+    let displays: [CGRect]
+}
+
+enum CaptureEvent: Sendable {
+    /// Always the first event: the frames of every requested window present
+    /// in shareable content, delivered before any pixels so layout rendering
+    /// never waits on captures.
+    case frames(WindowFrameHarvest)
+    case thumbnail(CGWindowID, CGImage)
+}
+
 /// One-shot window thumbnail capture via ScreenCaptureKit.
 struct CaptureService: Sendable {
     /// Generous: the overlay never blocks on a capture (placeholders fill in),
@@ -18,10 +35,12 @@ struct CaptureService: Sendable {
 
     /// Captures a downscaled frame of each requested window concurrently,
     /// yielding each thumbnail as soon as its capture completes (captures
-    /// begin eagerly, before the stream is consumed). Windows that are
-    /// missing from shareable content, time out, or fail are simply never
-    /// yielded — callers render placeholders for them.
-    func thumbnailStream(for windowIDs: [CGWindowID], maxPixel: Int) -> AsyncStream<(CGWindowID, CGImage)> {
+    /// begin eagerly, before the stream is consumed). The first event carries
+    /// the windows' frames — piggybacked on the SCShareableContent lookup the
+    /// captures need anyway. Windows that are missing from shareable content,
+    /// time out, or fail are simply never yielded — callers render
+    /// placeholders for them.
+    func captureStream(for windowIDs: [CGWindowID], maxPixel: Int) -> AsyncStream<CaptureEvent> {
         let timeout = perWindowTimeout
         let maxConcurrent = maxConcurrentCaptures
         return AsyncStream { continuation in
@@ -34,6 +53,11 @@ struct CaptureService: Sendable {
                     uniquingKeysWith: { first, _ in first }
                 )
                 let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
+
+                continuation.yield(.frames(WindowFrameHarvest(
+                    frames: Dictionary(uniqueKeysWithValues: targets.map { ($0.0, $0.1.value.frame) }),
+                    displays: content.displays.map(\.frame)
+                )))
 
                 await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
                     let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> (CGWindowID, CGImage?) in
@@ -50,7 +74,7 @@ struct CaptureService: Sendable {
                         next += 1
                     }
                     for await (id, image) in group {
-                        if let image { continuation.yield((id, image)) }
+                        if let image { continuation.yield(.thumbnail(id, image)) }
                         if next < targets.count {
                             let (id, boxed) = targets[next]
                             group.addTask { await capture(id, boxed) }
@@ -66,10 +90,24 @@ struct CaptureService: Sendable {
     /// Batch variant: all thumbnails at once (used by `--dump-images`).
     func thumbnails(for windowIDs: [CGWindowID], maxPixel: Int) async -> [CGWindowID: CGImage] {
         var result: [CGWindowID: CGImage] = [:]
-        for await (id, image) in thumbnailStream(for: windowIDs, maxPixel: maxPixel) {
-            result[id] = image
+        for await event in captureStream(for: windowIDs, maxPixel: maxPixel) {
+            if case .thumbnail(let id, let image) = event { result[id] = image }
         }
         return result
+    }
+
+    /// One shareable-content lookup, frames only — no pixels captured. Used
+    /// by the post-switch background harvest (M7), which needs the newly
+    /// visible workspace's window frames but no thumbnails.
+    func windowFrames(for windowIDs: [CGWindowID]) async -> WindowFrameHarvest? {
+        guard let content = try? await SCShareableContent
+            .excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return nil }
+        let wanted = Set(windowIDs)
+        var frames: [CGWindowID: CGRect] = [:]
+        for window in content.windows where wanted.contains(window.windowID) {
+            frames[window.windowID] = window.frame
+        }
+        return WindowFrameHarvest(frames: frames, displays: content.displays.map(\.frame))
     }
 
     /// The first ScreenCaptureKit capture of a process pays a ~370 ms session

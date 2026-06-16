@@ -10,6 +10,10 @@ struct OverlaySnapshot: Sendable {
     var allWindowIDs: [CGWindowID] {
         workspaces.flatMap(\.windows).map(\.id)
     }
+
+    var focusedWorkspace: AeroSpaceWorkspace? {
+        workspaces.first(where: \.isFocused)
+    }
 }
 
 enum OverlayContent: Sendable {

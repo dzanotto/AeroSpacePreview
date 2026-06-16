@@ -106,10 +106,20 @@ were one-liners; M5 is keyboard navigation + selection model.)
 **Exit criteria**: a week of daily-driving without crashes or stuck overlays — in progress
 from 2026-06-12; watch the summon timing NSLogs.
 
-## M7 — Layout-faithful previews via frame caching (L)
+## M7 — Layout-faithful previews via frame caching (L) ✅ CODE DONE 2026-06-12
 
 Replaces the uniform thumbnail grid inside a tile with a miniature of the workspace's real
 tiled layout, for every workspace we've seen at least once. (SPEC §1 rationale + §6.2.)
+
+Implemented as planned; notes: `Layout/FrameCacheStore.swift` holds the cache plus pure
+`LayoutMath` (normalize / display-pick / validate / letterbox — all unit-tested);
+`CaptureService.captureStream` now yields a `.frames` event (piggybacked harvest) before
+thumbnails, plus a standalone `windowFrames(for:)` used by the post-switch harvest
+(`AeroSpaceClient.fetchFocusedWorkspaceWindows`, 300 ms after each overlay action).
+Layouts publish separately from the immutable snapshot (same pattern as thumbnails), so a
+tile can upgrade grid→layout when summon-time frames land. JSON persistence and
+`exec-on-workspace-change` remain unwired (documented in README). Verify during the
+testing week alongside M6.
 
 - **Frame source — piggyback on SCK**: `SCWindow.frame` is already available from the
   `SCShareableContent` lookup `CaptureService` does on every summon — no new API, no new

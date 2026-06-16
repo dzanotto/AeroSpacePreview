@@ -41,6 +41,7 @@ struct OverlayRootView: View {
                 WorkspaceTileView(
                     workspace: workspace,
                     thumbnails: viewModel.thumbnails,
+                    layout: viewModel.layouts[workspace.name],
                     isSelected: workspace.name == viewModel.selectedWorkspace,
                     actions: actions
                 )

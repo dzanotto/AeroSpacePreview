@@ -11,6 +11,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var isHiding = false
     private var client: AeroSpaceClient?
     private let capture = CaptureService()
+    private let frameCache = FrameCacheStore()
+    private var harvestTask: Task<Void, Never>?
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -32,12 +34,12 @@ final class OverlayController: NSObject, NSWindowDelegate {
             let start = clock.now
             let content = await Self.loadState(client: client)
 
-            var stream: AsyncStream<(CGWindowID, CGImage)>?
+            var stream: AsyncStream<CaptureEvent>?
             var windowCount = 0
             if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
                 let windowIDs = snapshot.allWindowIDs
                 windowCount = windowIDs.count
-                stream = capture.thumbnailStream(for: windowIDs, maxPixel: 640)
+                stream = capture.captureStream(for: windowIDs, maxPixel: 640)
             }
             let stateDone = clock.now
 
@@ -46,9 +48,25 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
             guard let stream, let viewModel else { return }
             var captured = 0
-            for await (id, image) in stream {
-                viewModel.thumbnails[id] = image
-                captured += 1
+            for await event in stream {
+                switch event {
+                case .frames(let harvest):
+                    // The focused workspace is on screen right now, so its
+                    // frames are real — cache them and upgrade its tile.
+                    guard case .snapshot(let snapshot) = content,
+                          let focused = snapshot.focusedWorkspace else { break }
+                    self.frameCache.store(
+                        workspace: focused.name,
+                        windowIDs: focused.windows.map(\.id),
+                        harvest: harvest
+                    )
+                    if let layout = self.frameCache.layout(for: focused) {
+                        viewModel.layouts[focused.name] = layout
+                    }
+                case .thumbnail(let id, let image):
+                    viewModel.thumbnails[id] = image
+                    captured += 1
+                }
             }
             NSLog(
                 "AeroSpacePreview: summon — state %.0f ms, capture %.0f ms (%ld/%ld windows)",
@@ -103,6 +121,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
         )
 
         let viewModel = OverlayViewModel(content: content, actions: actions)
+        if case .snapshot(let snapshot) = content {
+            for workspace in snapshot.workspaces {
+                if let layout = frameCache.layout(for: workspace) {
+                    viewModel.layouts[workspace.name] = layout
+                }
+            }
+        }
         let panel = self.panel ?? makePanel()
         self.panel = panel
         panel.setFrame(screen.frame, display: true)
@@ -127,7 +152,31 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 try action(client)
             } catch {
                 NSLog("AeroSpacePreview: action failed: \(error)")
+                return
             }
+            await self.scheduleFocusedWorkspaceHarvest()
+        }
+    }
+
+    /// An overlay action just revealed a workspace — once it settles, snapshot
+    /// its real window frames into the layout cache in the background. Normal
+    /// use of the app populates the cache by itself this way.
+    private func scheduleFocusedWorkspaceHarvest() {
+        guard let client, ScreenRecordingPermission.isGranted else { return }
+        harvestTask?.cancel()
+        harvestTask = Task { [capture, frameCache] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled,
+                  let focused = try? await client.fetchFocusedWorkspaceWindows(),
+                  !focused.windowIDs.isEmpty,
+                  let harvest = await capture.windowFrames(for: focused.windowIDs),
+                  !Task.isCancelled
+            else { return }
+            frameCache.store(
+                workspace: focused.workspace,
+                windowIDs: focused.windowIDs,
+                harvest: harvest
+            )
         }
     }
 
