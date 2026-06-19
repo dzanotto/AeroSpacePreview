@@ -3,6 +3,11 @@
 Companion to [SPEC.md](SPEC.md). Six milestones, each ending in something runnable.
 Estimated sizes are relative (S/M/L), not time promises.
 
+> **v1 is CLOSED (2026-06-19).** M0–M7 shipped; the daily-driving soak week
+> (2026-06-12 → 2026-06-19) passed without crashes or stuck overlays, and M7's
+> layout previews verified in practice. M8 (menu bar) and M9 (live thumbnails) are
+> **out of v1** by SPEC §4 — they're the first post-v1 work, not v1 blockers.
+
 ## M0 — Feasibility spikes (S) ✅ DONE 2026-06-10
 
 All three risks retired (spike code in `spikes/`, results in SPEC.md §7):
@@ -78,7 +83,7 @@ were one-liners; M5 is keyboard navigation + selection model.)
 
 **Exit criteria**: full loop usable daily without touching the mouse; mouse-only also works.
 
-## M6 — Polish & hardening (M) ✅ CODE DONE 2026-06-12 (exit criterion: a week of daily-driving)
+## M6 — Polish & hardening (M) ✅ DONE 2026-06-12 (soak week passed 2026-06-19)
 
 - Re-entrancy: hotkey while overlay open = dismiss; ignore summon while a snapshot is loading.
   (Both already held from M1/M4 guards — verified by inspection, no changes needed.)
@@ -103,8 +108,8 @@ were one-liners; M5 is keyboard navigation + selection model.)
   R3 closed in SPEC §7 (no Hyper bindings in aerospace.toml, checked 2026-06-12).
 - `git init` + `.gitignore` were done at M1.
 
-**Exit criteria**: a week of daily-driving without crashes or stuck overlays — in progress
-from 2026-06-12; watch the summon timing NSLogs.
+**Exit criteria**: a week of daily-driving without crashes or stuck overlays — ✅ met
+(2026-06-12 → 2026-06-19, no crashes or stuck overlays).
 
 ## M7 — Layout-faithful previews via frame caching (L) ✅ CODE DONE 2026-06-12
 
@@ -118,8 +123,9 @@ thumbnails, plus a standalone `windowFrames(for:)` used by the post-switch harve
 (`AeroSpaceClient.fetchFocusedWorkspaceWindows`, 300 ms after each overlay action).
 Layouts publish separately from the immutable snapshot (same pattern as thumbnails), so a
 tile can upgrade grid→layout when summon-time frames land. JSON persistence and
-`exec-on-workspace-change` remain unwired (documented in README). Verify during the
-testing week alongside M6.
+`exec-on-workspace-change` remain unwired (documented in README). ✅ Verified during the
+soak week (2026-06-19): focused + visited workspaces render as layouts, never-visited and
+hidden-set-changed workspaces fall back to the grid.
 
 - **Frame source — piggyback on SCK**: `SCWindow.frame` is already available from the
   `SCShareableContent` lookup `CaptureService` does on every summon — no new API, no new
@@ -148,7 +154,7 @@ testing week alongside M6.
 a never-visited workspace falls back to the grid; opening/closing a window on a hidden
 workspace falls back to the grid instead of showing a wrong layout.
 
-## M8 — Menu bar icon (S)
+## M8 — Menu bar icon (S) — POST-v1 (SPEC §4 non-goal)
 
 The app is `LSUIElement` — today there is no way to see it's running or quit it without
 `kill`. Small, independent; can be slotted before or in parallel with M7.
@@ -161,7 +167,7 @@ The app is `LSUIElement` — today there is no way to see it's running or quit i
 
 **Exit criteria**: icon visible, all four menu actions work, login item survives reboot.
 
-## M9 — Live thumbnails while the overlay is open (M)
+## M9 — Live thumbnails while the overlay is open (M) — POST-v1 (SPEC §4 non-goal)
 
 - **Approach: periodic re-capture, not `SCStream`.** One stream per window means N live
   streams with real resource limits and lifecycle complexity; the existing one-shot path
