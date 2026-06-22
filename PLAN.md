@@ -171,9 +171,9 @@ Implemented as planned in `App/StatusItemController.swift` (owned by `AppDelegat
 
 **Exit criteria**: icon visible, all four menu actions work, login item survives reboot.
 Release build and bundle are clean; the `square.grid.2x2` icon is confirmed visible in the
-menu bar under `make run`. Menu wiring is reviewed against the criteria. The login-item
-register/unregister and survives-reboot check are left to in-use validation (they mutate the
-user's real login items, so not exercised automatically).
+menu bar, and all four menu actions (Show Preview, Launch at Login, About, Quit) were
+manually verified working. Login-item survives-reboot is the only check left to confirm in
+normal use.
 
 ## M9 — Live thumbnails while the overlay is open (M) — POST-v1 (SPEC §4 non-goal)
 
