@@ -154,18 +154,26 @@ hidden-set-changed workspaces fall back to the grid.
 a never-visited workspace falls back to the grid; opening/closing a window on a hidden
 workspace falls back to the grid instead of showing a wrong layout.
 
-## M8 — Menu bar icon (S) — POST-v1 (SPEC §4 non-goal)
+## M8 — Menu bar icon (S) — POST-v1 ✅ DONE 2026-06-22
 
-The app is `LSUIElement` — today there is no way to see it's running or quit it without
-`kill`. Small, independent; can be slotted before or in parallel with M7.
+The app is `LSUIElement` — there was no way to see it's running or quit it without `kill`.
+Implemented as planned in `App/StatusItemController.swift` (owned by `AppDelegate` next to
+`HotKeyManager`):
 
-- `NSStatusItem` with a template SF Symbol (e.g. `square.grid.2x2`), menu:
-  - "Show Workspace Preview  ⌘⌃⌥⇧S" → toggles the overlay (same path as the hotkey).
-  - "Launch at Login" checkbox via `SMAppService.mainApp`.
-  - "About AeroSpacePreview" (version from the bundle) and "Quit".
-- Lives in `App/StatusItemController.swift`; AppDelegate owns it next to `HotKeyManager`.
+- `NSStatusItem` with the template SF Symbol `square.grid.2x2`, menu:
+  - "Show Workspace Preview  ⌘⌃⌥⇧S" → `overlay.toggle()` (same path as the hotkey; the
+    Hyper modifiers are display-only since the global Carbon hotkey already handles it).
+  - "Launch at Login" → `SMAppService.mainApp` register/unregister; the checkmark is
+    refreshed from `.status` via `NSMenuDelegate.menuNeedsUpdate` each time the menu opens.
+  - "About AeroSpacePreview" → `orderFrontStandardAboutPanel` (version read from the bundle
+    Info.plist; `NSApp.activate` first so the panel comes to front for the accessory app).
+  - "Quit AeroSpacePreview".
 
 **Exit criteria**: icon visible, all four menu actions work, login item survives reboot.
+Release build and bundle are clean; the `square.grid.2x2` icon is confirmed visible in the
+menu bar under `make run`. Menu wiring is reviewed against the criteria. The login-item
+register/unregister and survives-reboot check are left to in-use validation (they mutate the
+user's real login items, so not exercised automatically).
 
 ## M9 — Live thumbnails while the overlay is open (M) — POST-v1 (SPEC §4 non-goal)
 

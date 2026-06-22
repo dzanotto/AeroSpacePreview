@@ -22,8 +22,9 @@ make dev      # bundle + run attached to the terminal (NSLog output visible)
 swift test    # unit tests
 ```
 
-The app is a menu-bar-less agent (`LSUIElement`): nothing appears in the Dock; the only UI
-is the overlay. Quit it with `pkill AeroSpacePreview` (a menu bar icon is planned — PLAN.md M8).
+The app is an agent (`LSUIElement`): nothing appears in the Dock. It lives in the menu bar
+as a `square.grid.2x2` icon whose menu can show the overlay, toggle **Launch at Login**,
+show an about box, and quit.
 
 > **Toolchain note**: the Makefile pins `TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault`.
 > If you invoke `swift` directly and get SDK errors from a custom toolchain, do the same.
@@ -94,4 +95,4 @@ Each summon logs a timing line via NSLog (`make dev` to see it):
   then `$PATH`.
 
 See [SPEC.md](SPEC.md) for the full specification and [PLAN.md](PLAN.md) for the milestone
-history and roadmap (menu bar icon and live thumbnails are next).
+history and roadmap (live thumbnails are next).

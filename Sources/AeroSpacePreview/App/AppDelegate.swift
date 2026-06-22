@@ -5,8 +5,13 @@ import Carbon.HIToolbox
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = OverlayController()
     private var hotKey: HotKeyManager?
+    private var statusItem: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = StatusItemController { [weak self] in
+            self?.overlay.toggle()
+        }
+
         hotKey = HotKeyManager(
             keyCode: UInt32(kVK_ANSI_S),
             modifiers: UInt32(cmdKey | controlKey | optionKey | shiftKey)
