@@ -3,7 +3,7 @@ import SwiftUI
 
 struct WorkspaceTileView: View {
     let workspace: AeroSpaceWorkspace
-    let thumbnails: [CGWindowID: CGImage]
+    let thumbnails: ThumbnailStore
     /// Validated miniature layout, or nil → uniform grid fallback.
     let layout: WorkspaceLayout?
     let isSelected: Bool
@@ -67,8 +67,11 @@ struct WorkspaceTileView: View {
                 spacing: 8
             ) {
                 ForEach(workspace.windows, id: \.id) { window in
-                    WindowThumbnailView(window: window, image: thumbnails[window.id])
-                        .onTapGesture { actions.focusWindow(window.id) }
+                    WindowThumbnailView(
+                        window: window,
+                        thumbnail: thumbnails.slot(for: window.id)
+                    )
+                    .onTapGesture { actions.focusWindow(window.id) }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -83,7 +86,7 @@ struct WorkspaceTileView: View {
 struct WorkspaceLayoutView: View {
     let workspace: AeroSpaceWorkspace
     let layout: WorkspaceLayout
-    let thumbnails: [CGWindowID: CGImage]
+    let thumbnails: ThumbnailStore
     let actions: OverlayActions
 
     var body: some View {
@@ -93,7 +96,7 @@ struct WorkspaceLayoutView: View {
                 if let unit = layout.frames[window.id] {
                     WindowThumbnailView(
                         window: window,
-                        image: thumbnails[window.id],
+                        thumbnail: thumbnails.slot(for: window.id),
                         fillsCell: true
                     )
                     .frame(width: unit.width * box.width, height: unit.height * box.height)
@@ -111,7 +114,7 @@ struct WorkspaceLayoutView: View {
 
 struct WindowThumbnailView: View {
     let window: AeroSpaceWindow
-    let image: CGImage?
+    @ObservedObject var thumbnail: ThumbnailStore.Slot
     /// In the layout miniature the cell already has the window's shape — the
     /// content stretches to fill it. In the uniform grid the content sizes
     /// itself (fit, 16:10 placeholder).
@@ -119,14 +122,14 @@ struct WindowThumbnailView: View {
 
     var body: some View {
         Group {
-            if let image {
+            if let image = thumbnail.image {
                 let img = Image(decorative: image, scale: 1).resizable()
                 if fillsCell { img } else { img.scaledToFit() }
             } else {
                 placeholderCard
             }
         }
-        .animation(.easeOut(duration: 0.12), value: image == nil)
+        .animation(.easeOut(duration: 0.12), value: thumbnail.image == nil)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .overlay(
             RoundedRectangle(cornerRadius: 6)

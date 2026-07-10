@@ -59,9 +59,10 @@ The combination is a single constant in `AppDelegate.swift` if you need to chang
 | Esc / click backdrop | dismiss |
 
 Workspaces shown: occupied ones plus the focused one (even if empty), in AeroSpace's
-natural sort order. Thumbnails are one-shot captures taken on summon; the overlay appears
-as soon as AeroSpace state is in (~100 ms) and thumbnails pop in as captures complete
-(~30 ms per window, serialized inside ScreenCaptureKit).
+natural sort order. An initial one-shot pass lets thumbnails pop in progressively
+(~30 ms per window, serialized inside ScreenCaptureKit). It then transitions to
+change-aware streams at up to 30 fps: animated windows update in real time while static
+windows keep their still image.
 
 ### Layout previews
 
@@ -85,8 +86,9 @@ AeroSpacePreview --dump-images DIR    # write a thumbnail/placeholder PNG per wi
 AeroSpacePreview --show-on-launch     # summon the overlay immediately (testing)
 ```
 
-Each summon logs a timing line via NSLog (`make dev` to see it):
-`summon — state 80 ms, capture 290 ms (8/8 windows)`.
+Each summon logs timing and live-stream startup via NSLog (`make dev` to see it):
+`summon — state 80 ms, capture 290 ms (8/8 windows)` and
+`live capture — 8/8 streams at up to 30 fps`.
 
 ## Requirements
 
@@ -94,5 +96,5 @@ Each summon logs a timing line via NSLog (`make dev` to see it):
   the CLI is discovered at `/opt/homebrew/bin/aerospace`, `/usr/local/bin/aerospace`,
   then `$PATH`.
 
-See [SPEC.md](SPEC.md) for the full specification and [PLAN.md](PLAN.md) for the milestone
-history and roadmap (live thumbnails are next).
+See [SPEC.md](SPEC.md) for the original v1 specification and [PLAN.md](PLAN.md) for the
+milestone history and deferred roadmap.

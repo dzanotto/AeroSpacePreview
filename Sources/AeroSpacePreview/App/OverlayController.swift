@@ -13,6 +13,9 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private let capture = CaptureService()
     private let frameCache = FrameCacheStore()
     private var harvestTask: Task<Void, Never>?
+    /// Covers both the progressive one-shot pass and the live-stream phase.
+    /// Dismissal cancels it, which terminates and stops every SCStream.
+    private var captureTask: Task<Void, Never>?
 
     var isVisible: Bool { panel?.isVisible ?? false }
 
@@ -23,13 +26,14 @@ final class OverlayController: NSObject, NSWindowDelegate {
     func show() {
         guard !isVisible, !isLoading else { return }
         isLoading = true
+        captureTask?.cancel()
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
         // captures start at the same moment and stream in one by one
         // (~30 ms/window, serialized by SCK — see M6 measurements in
         // PLAN.md). Placeholders cover whatever hasn't landed yet.
-        Task { [client, capture] in
+        captureTask = Task { [client, capture] in
             let clock = ContinuousClock()
             let start = clock.now
             let content = await Self.loadState(client: client)
@@ -49,6 +53,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             guard let stream, let viewModel else { return }
             var captured = 0
             for await event in stream {
+                guard !Task.isCancelled else { return }
                 switch event {
                 case .frames(let harvest):
                     // The focused workspace is on screen right now, so its
@@ -64,7 +69,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
                         viewModel.layouts[focused.name] = layout
                     }
                 case .thumbnail(let id, let image):
-                    viewModel.thumbnails[id] = image
+                    viewModel.thumbnails.update(image, for: id)
                     captured += 1
                 }
             }
@@ -74,11 +79,31 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 stateDone.duration(to: clock.now) / .milliseconds(1),
                 captured, windowCount
             )
+
+            // The one-shot pass supplies immediate stills and remains the
+            // fallback for any stream that cannot start. Live streams publish
+            // only changed frames; idle windows keep that still image.
+            guard !Task.isCancelled, self.isVisible,
+                  case .snapshot(let snapshot) = content,
+                  !snapshot.permissionDenied,
+                  !snapshot.allWindowIDs.isEmpty
+            else { return }
+            let liveStream = capture.liveThumbnailStream(
+                for: snapshot.allWindowIDs,
+                maxPixel: 640,
+                framesPerSecond: 30
+            )
+            for await frame in liveStream {
+                guard !Task.isCancelled, self.isVisible else { return }
+                viewModel.thumbnails.update(frame.image, for: frame.windowID)
+            }
         }
     }
 
     func hide() {
         guard let panel, isVisible, !isHiding else { return }
+        captureTask?.cancel()
+        captureTask = nil
         isHiding = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.12

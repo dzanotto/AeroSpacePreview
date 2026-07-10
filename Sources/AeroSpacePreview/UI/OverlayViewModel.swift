@@ -10,7 +10,9 @@ import SwiftUI
 final class OverlayViewModel: ObservableObject {
     @Published private(set) var selectedWorkspace: String?
     @Published private(set) var typedPrefix = ""
-    @Published var thumbnails: [CGWindowID: CGImage] = [:]
+    /// Stable per-window slots let live frames redraw only the affected
+    /// thumbnail instead of invalidating the complete workspace grid.
+    let thumbnails: ThumbnailStore
     /// Workspace name → validated miniature layout. Tiles without an entry
     /// render the uniform grid. Seeded from the frame cache at presentation;
     /// the focused workspace's entry refreshes when its summon-time frames
@@ -28,11 +30,13 @@ final class OverlayViewModel: ObservableObject {
         self.content = content
         self.actions = actions
         if case .snapshot(let snapshot) = content {
+            thumbnails = ThumbnailStore(windowIDs: snapshot.allWindowIDs)
             workspaceNames = snapshot.workspaces.map(\.name)
             columns = OverlayKeyLogic.columns(for: snapshot.workspaces.count)
             selectedWorkspace = snapshot.workspaces.first(where: \.isFocused)?.name
                 ?? snapshot.workspaces.first?.name
         } else {
+            thumbnails = ThumbnailStore(windowIDs: [])
             workspaceNames = []
             columns = 1
         }

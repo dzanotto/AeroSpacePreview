@@ -175,24 +175,32 @@ menu bar, and all four menu actions (Show Preview, Launch at Login, About, Quit)
 manually verified working. Login-item survives-reboot is the only check left to confirm in
 normal use.
 
-## M9 — Live thumbnails while the overlay is open (M) — POST-v1 (SPEC §4 non-goal)
+## M9 — Adaptive live thumbnails while the overlay is open (M) — POST-v1 ✅ CODE DONE 2026-07-10
 
-- **Approach: periodic re-capture, not `SCStream`.** One stream per window means N live
-  streams with real resource limits and lifecycle complexity; the existing one-shot path
-  captures ~40–65 ms/window concurrently (M0), so refreshing 10 windows comfortably fits a
-  1 s tick. Reuse `CaptureService.thumbnails(for:maxPixel:)` unchanged.
-- Refresh loop owned by `OverlayController`/`OverlayViewModel`: start after the first
-  snapshot is published, tick at 1 Hz, cancel on dismiss. Skip a tick if the previous pass
-  is still in flight. Drop to 0.5 Hz above ~20 windows.
-- Publish thumbnail updates without rebuilding `OverlaySnapshot`: split thumbnails into a
-  separately published dictionary the tiles observe (snapshot stays immutable for
-  workspaces/focus/layout; only pixels refresh).
-- A failed re-capture keeps the last good frame — never flash back to a placeholder.
-- The AeroSpace state (window set, focus) stays static while open — refreshing pixels only.
-  Re-fetching state live is out of scope.
+- **Change-aware `SCStream` capture**: after the progressive one-shot pass supplies the
+  initial stills, one desktop-independent stream starts per capturable window at up to
+  30 fps. ScreenCaptureKit emits `.complete` frames for changed content and `.idle` for
+  static content; only `.started`/`.complete` frames are published. Static thumbnails
+  therefore stay visually frozen with no motion classifier or probe delay.
+- Streams are intentionally uncapped: every animated window can refresh concurrently.
+  Output stays at the existing 640-pixel thumbnail resolution with a two-frame queue so
+  stale frames do not build up.
+- `ThumbnailStore` gives each window a stable observable slot. A live frame redraws only
+  its thumbnail rather than invalidating the whole overlay grid; `OverlaySnapshot` remains
+  immutable for workspace/focus/layout state.
+- `OverlayController` owns the complete one-shot → live lifecycle. Dismissal cancels the
+  consumer and stops every stream; cleanup is idempotent and also handles cancellation
+  racing asynchronous startup.
+- Idle, blank, suspended, stopped, failed, or uncapturable streams keep the last good still
+  instead of flashing a placeholder. The AeroSpace state/window set remains static until
+  the next summon.
+- Swift Testing coverage locks frame-status filtering, stable per-window slots,
+  last-good-frame retention, and cancellation cleanup.
 
 **Exit criteria**: a video playing on a hidden workspace visibly updates in the open
-overlay; no flicker; CPU while open stays acceptable (measure; tune rate/resolution if not).
+overlay at up to 30 fps; static windows remain still; no flicker; CPU/GPU and memory with
+several simultaneous animated windows stay acceptable. Build and automated tests pass;
+visual and resource checks remain to be recorded during normal use.
 
 ## Deferred (tracked, not planned)
 
