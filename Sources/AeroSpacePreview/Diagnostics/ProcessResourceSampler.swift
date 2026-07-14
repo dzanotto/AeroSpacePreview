@@ -14,6 +14,25 @@ struct ProcessResourceDelta: Equatable, Sendable {
 }
 
 enum ProcessResourceMath {
+    static func nanoseconds(
+        fromMachTicks ticks: UInt64,
+        numerator: UInt32,
+        denominator: UInt32
+    ) -> UInt64? {
+        guard denominator > 0 else { return nil }
+
+        let numerator = UInt64(numerator)
+        let denominator = UInt64(denominator)
+        let quotient = ticks / denominator
+        let remainder = ticks % denominator
+        let wholeNanoseconds = quotient.multipliedReportingOverflow(by: numerator)
+        guard !wholeNanoseconds.overflow else { return nil }
+
+        let fractionalNanoseconds = remainder * numerator / denominator
+        let total = wholeNanoseconds.partialValue.addingReportingOverflow(fractionalNanoseconds)
+        return total.overflow ? nil : total.partialValue
+    }
+
     static func delta(
         from previous: ProcessResourceSample,
         to current: ProcessResourceSample
@@ -38,6 +57,12 @@ enum ProcessResourceMath {
 /// Lightweight public-process accounting. A read failure simply produces no
 /// resource fields in the next diagnostics snapshot.
 struct ProcessResourceSampler: Sendable {
+    private static let timebase: mach_timebase_info_data_t = {
+        var value = mach_timebase_info_data_t()
+        mach_timebase_info(&value)
+        return value
+    }()
+
     func sample(wallTimeNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds) -> ProcessResourceSample? {
         var usage = rusage_info_v0()
         let result = withUnsafeMutablePointer(to: &usage) { pointer in
@@ -45,10 +70,20 @@ struct ProcessResourceSampler: Sendable {
                 proc_pid_rusage(getpid(), RUSAGE_INFO_V0, $0)
             }
         }
-        guard result == 0 else { return nil }
+        let cpuTicks = usage.ri_user_time.addingReportingOverflow(usage.ri_system_time)
+        guard result == 0,
+              !cpuTicks.overflow,
+              // CPU usage fields are Mach absolute-time ticks, not nanoseconds.
+              let cpuTimeNanoseconds = ProcessResourceMath.nanoseconds(
+                  fromMachTicks: cpuTicks.partialValue,
+                  numerator: Self.timebase.numer,
+                  denominator: Self.timebase.denom
+              )
+        else { return nil }
+
         return ProcessResourceSample(
             wallTimeNanoseconds: wallTimeNanoseconds,
-            cpuTimeNanoseconds: usage.ri_user_time &+ usage.ri_system_time,
+            cpuTimeNanoseconds: cpuTimeNanoseconds,
             physicalFootprintBytes: usage.ri_phys_footprint,
             packageIdleWakeups: usage.ri_pkg_idle_wkups
         )

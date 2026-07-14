@@ -28,6 +28,21 @@ import Testing
         #expect(delta.packageIdleWakeupsPerSecond == 10)
     }
 
+    @Test func convertsProcessCPUMachTicksToNanoseconds() throws {
+        let nanoseconds = try #require(ProcessResourceMath.nanoseconds(
+            fromMachTicks: 24_000_000,
+            numerator: 125,
+            denominator: 3
+        ))
+
+        #expect(nanoseconds == 1_000_000_000)
+        #expect(ProcessResourceMath.nanoseconds(
+            fromMachTicks: 1,
+            numerator: 1,
+            denominator: 0
+        ) == nil)
+    }
+
     @Test func formatsPhysicalFootprintInMegabytesAndUnavailableState() {
         #expect(DiagnosticsHUDFormatter.physicalFootprint(176_160_768) == "168 MB")
         #expect(DiagnosticsHUDFormatter.physicalFootprint(nil) == "—")
