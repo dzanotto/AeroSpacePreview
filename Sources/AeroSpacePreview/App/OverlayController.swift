@@ -68,7 +68,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
                 let windowIDs = snapshot.allWindowIDs
                 windowCount = windowIDs.count
-                stream = capture.captureStream(for: windowIDs, maxPixel: 640)
+                stream = capture.captureStream(for: windowIDs, maxPixel: 320)
             }
             self.diagnostics.prepareSummon(
                 windowIDs: stream == nil ? [] : content.windowIDsForDiagnostics
@@ -121,7 +121,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             else { return }
             let liveStream = capture.liveThumbnailStream(
                 for: snapshot.allWindowIDs,
-                maxPixel: 640,
+                maxPixel: 320,
                 framesPerSecond: 30,
                 diagnostics: self.diagnostics
             )
