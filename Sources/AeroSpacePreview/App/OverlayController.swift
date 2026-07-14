@@ -12,15 +12,40 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var client: AeroSpaceClient?
     private let capture = CaptureService()
     private let frameCache = FrameCacheStore()
+    private let diagnostics = CaptureDiagnostics()
+    private let resourceSampler = ProcessResourceSampler()
+    private var diagnosticsEnabled: Bool
+    private var diagnosticsTask: Task<Void, Never>?
+    private weak var currentViewModel: OverlayViewModel?
     private var harvestTask: Task<Void, Never>?
     /// Covers both the progressive one-shot pass and the live-stream phase.
     /// Dismissal cancels it, which terminates and stops every SCStream.
     private var captureTask: Task<Void, Never>?
 
     var isVisible: Bool { panel?.isVisible ?? false }
+    var isDiagnosticsEnabled: Bool { diagnosticsEnabled }
+
+    init(diagnosticsEnabled: Bool = false) {
+        self.diagnosticsEnabled = diagnosticsEnabled
+    }
 
     func toggle() {
         isVisible ? hide() : show()
+    }
+
+    func toggleDiagnostics() {
+        setDiagnosticsEnabled(!diagnosticsEnabled)
+    }
+
+    func setDiagnosticsEnabled(_ enabled: Bool) {
+        guard enabled != diagnosticsEnabled else { return }
+        diagnosticsEnabled = enabled
+        guard isVisible, let currentViewModel else { return }
+        if enabled {
+            startDiagnosticsSession(viewModel: currentViewModel)
+        } else {
+            stopDiagnosticsSession(logSummary: true)
+        }
     }
 
     func show() {
@@ -45,10 +70,16 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 windowCount = windowIDs.count
                 stream = capture.captureStream(for: windowIDs, maxPixel: 640)
             }
+            self.diagnostics.prepareSummon(
+                windowIDs: stream == nil ? [] : content.windowIDsForDiagnostics
+            )
             let stateDone = clock.now
 
             let viewModel = self.present(content)
             self.isLoading = false
+            if let viewModel, self.diagnosticsEnabled {
+                self.startDiagnosticsSession(viewModel: viewModel)
+            }
 
             guard let stream, let viewModel else { return }
             var captured = 0
@@ -91,11 +122,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
             let liveStream = capture.liveThumbnailStream(
                 for: snapshot.allWindowIDs,
                 maxPixel: 640,
-                framesPerSecond: 30
+                framesPerSecond: 30,
+                diagnostics: self.diagnostics
             )
             for await frame in liveStream {
                 guard !Task.isCancelled, self.isVisible else { return }
                 viewModel.thumbnails.update(frame.image, for: frame.windowID)
+                self.diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
             }
         }
     }
@@ -104,6 +137,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard let panel, isVisible, !isHiding else { return }
         captureTask?.cancel()
         captureTask = nil
+        stopDiagnosticsSession(logSummary: true)
         isHiding = true
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.12
@@ -111,6 +145,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         }, completionHandler: {
             MainActor.assumeIsolated {
                 panel.orderOut(nil)
+                self.currentViewModel = nil
                 self.isHiding = false
             }
         })
@@ -146,6 +181,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         )
 
         let viewModel = OverlayViewModel(content: content, actions: actions)
+        currentViewModel = viewModel
         if case .snapshot(let snapshot) = content {
             for workspace in snapshot.workspaces {
                 if let layout = frameCache.layout(for: workspace) {
@@ -165,6 +201,69 @@ final class OverlayController: NSObject, NSWindowDelegate {
             panel.animator().alphaValue = 1
         }
         return viewModel
+    }
+
+    // MARK: - Diagnostics
+
+    private func startDiagnosticsSession(viewModel: OverlayViewModel) {
+        guard diagnosticsEnabled, isVisible, !diagnostics.isEnabled else { return }
+        diagnosticsTask?.cancel()
+        let labels = viewModel.content.windowLabelsForDiagnostics
+        diagnostics.beginSession(windowLabels: labels)
+
+        let diagnostics = self.diagnostics
+        let sampler = resourceSampler
+        diagnosticsTask = Task.detached(priority: .utility) { [weak viewModel] in
+            var baseline = sampler.sample()
+            var previous = baseline
+
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(500))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+
+                if let current = sampler.sample() {
+                    if baseline == nil { baseline = current }
+                    if previous == nil { previous = current }
+                    if let previous,
+                       let baseline,
+                       let currentDelta = ProcessResourceMath.delta(from: previous, to: current),
+                       let sessionDelta = ProcessResourceMath.delta(from: baseline, to: current) {
+                        diagnostics.recordProcessResources(
+                            currentCPUPercentage: currentDelta.cpuPercentage,
+                            averageCPUPercentage: sessionDelta.cpuPercentage,
+                            physicalFootprintBytes: current.physicalFootprintBytes,
+                            packageIdleWakeupsPerSecond: currentDelta.packageIdleWakeupsPerSecond
+                        )
+                    }
+                    previous = current
+                }
+
+                guard let snapshot = diagnostics.makeSnapshot() else { return }
+                await MainActor.run { [weak viewModel] in
+                    viewModel?.publishDiagnostics(snapshot)
+                }
+            }
+        }
+    }
+
+    private func stopDiagnosticsSession(logSummary: Bool) {
+        diagnosticsTask?.cancel()
+        diagnosticsTask = nil
+        currentViewModel?.publishDiagnostics(nil)
+        guard let snapshot = diagnostics.endSession() else { return }
+        if logSummary {
+            NSLog("%@", DiagnosticsHUDFormatter.dismissalSummary(snapshot))
+        }
+    }
+
+    func shutdown() {
+        captureTask?.cancel()
+        captureTask = nil
+        stopDiagnosticsSession(logSummary: true)
     }
 
     /// Runs an aerospace action off the main actor and dismisses immediately —

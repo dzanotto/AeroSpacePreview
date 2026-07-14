@@ -23,6 +23,7 @@ enum CaptureEvent: Sendable {
 struct LiveThumbnailFrame: Sendable {
     let windowID: CGWindowID
     let image: CGImage
+    let diagnosticsTiming: DiagnosticsFrameTiming?
 }
 
 /// One-shot and change-aware live window capture via ScreenCaptureKit.
@@ -110,16 +111,21 @@ struct CaptureService: Sendable {
     func liveThumbnailStream(
         for windowIDs: [CGWindowID],
         maxPixel: Int,
-        framesPerSecond: Int = 30
+        framesPerSecond: Int = 30,
+        diagnostics: CaptureDiagnostics? = nil
     ) -> AsyncStream<LiveThumbnailFrame> {
         AsyncStream { continuation in
             let lifetime = LiveStreamLifetime()
             let task = Task {
                 defer { continuation.finish() }
-                guard !windowIDs.isEmpty,
-                      let content = try? await SCShareableContent
-                        .excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                else { return }
+                guard !windowIDs.isEmpty else { return }
+                let startupToken = diagnostics?.beginLiveStreamStartup()
+                guard let content = try? await SCShareableContent
+                    .excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                else {
+                    if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
+                    return
+                }
 
                 let wanted = Set(windowIDs)
                 let targets = content.windows.filter { wanted.contains($0.windowID) }
@@ -132,13 +138,17 @@ struct CaptureService: Sendable {
                         let boxed = UncheckedSendable(window)
                         group.addTask {
                             do {
-                                return try await Self.startLiveStream(
+                                let handle = try await Self.startLiveStream(
                                     for: boxed.value,
                                     maxPixel: maxPixel,
                                     framesPerSecond: framesPerSecond,
-                                    continuation: continuation
+                                    continuation: continuation,
+                                    diagnostics: diagnostics
                                 )
+                                diagnostics?.recordStreamStarted(windowID: windowID)
+                                return handle
                             } catch {
+                                diagnostics?.recordStreamStartupFailure(windowID: windowID)
                                 NSLog(
                                     "AeroSpacePreview: live capture failed to start for window %u: %@",
                                     windowID,
@@ -155,6 +165,7 @@ struct CaptureService: Sendable {
                     }
                     return result
                 }
+                if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
 
                 await lifetime.install(handles.map { handle in
                     { try? await handle.stream.stopCapture() }
@@ -199,6 +210,18 @@ struct CaptureService: Sendable {
         }
     }
 
+    static func diagnosticsStatus(frameStatus: SCFrameStatus) -> DiagnosticsFrameStatus? {
+        switch frameStatus {
+        case .started: .started
+        case .complete: .complete
+        case .idle: .idle
+        case .blank: .blank
+        case .suspended: .suspended
+        case .stopped: .stopped
+        @unknown default: nil
+        }
+    }
+
     /// One shareable-content lookup, frames only — no pixels captured. Used
     /// by the post-switch background harvest (M7), which needs the newly
     /// visible workspace's window frames but no thumbnails.
@@ -239,7 +262,8 @@ struct CaptureService: Sendable {
         for window: SCWindow,
         maxPixel: Int,
         framesPerSecond: Int,
-        continuation: AsyncStream<LiveThumbnailFrame>.Continuation
+        continuation: AsyncStream<LiveThumbnailFrame>.Continuation,
+        diagnostics: CaptureDiagnostics?
     ) async throws -> LiveStreamHandle {
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let config = SCStreamConfiguration()
@@ -256,7 +280,11 @@ struct CaptureService: Sendable {
         config.ignoreShadowsSingleWindow = true
         config.capturesAudio = false
 
-        let output = LiveStreamOutput(windowID: window.windowID, continuation: continuation)
+        let output = LiveStreamOutput(
+            windowID: window.windowID,
+            continuation: continuation,
+            diagnostics: diagnostics
+        )
         let stream = SCStream(filter: filter, configuration: config, delegate: output)
         try stream.addStreamOutput(
             output,
@@ -276,13 +304,16 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
     let queue: DispatchQueue
     private let windowID: CGWindowID
     private let continuation: AsyncStream<LiveThumbnailFrame>.Continuation
+    private let diagnostics: CaptureDiagnostics?
 
     init(
         windowID: CGWindowID,
-        continuation: AsyncStream<LiveThumbnailFrame>.Continuation
+        continuation: AsyncStream<LiveThumbnailFrame>.Continuation,
+        diagnostics: CaptureDiagnostics?
     ) {
         self.windowID = windowID
         self.continuation = continuation
+        self.diagnostics = diagnostics
         queue = DispatchQueue(
             label: "com.dariozanotto.aerospacepreview.live-capture.\(windowID)",
             qos: .userInteractive
@@ -296,22 +327,78 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
     ) {
         guard outputType == .screen,
               sampleBuffer.isValid,
-              let status = Self.frameStatus(of: sampleBuffer),
-              CaptureService.shouldPublish(frameStatus: status),
-              let pixelBuffer = sampleBuffer.imageBuffer
+              let attachments = Self.frameAttachments(of: sampleBuffer),
+              let status = Self.frameStatus(in: attachments)
+        else { return }
+
+        guard CaptureService.shouldPublish(frameStatus: status) else {
+            if let diagnosticsStatus = CaptureService.diagnosticsStatus(frameStatus: status) {
+                _ = diagnostics?.recordFrame(
+                    windowID: windowID,
+                    status: diagnosticsStatus,
+                    width: nil,
+                    height: nil,
+                    windowServerDisplayMachTime: nil
+                )
+            }
+            return
+        }
+
+        let pixelBuffer = sampleBuffer.imageBuffer
+        let width = pixelBuffer.map { CVPixelBufferGetWidth($0) }
+        let height = pixelBuffer.map { CVPixelBufferGetHeight($0) }
+        let timing = CaptureService.diagnosticsStatus(frameStatus: status).flatMap { diagnosticsStatus in
+            diagnostics?.recordFrame(
+                windowID: windowID,
+                status: diagnosticsStatus,
+                width: width,
+                height: height,
+                windowServerDisplayMachTime: Self.displayTime(in: attachments)
+            )
+        }
+        guard let pixelBuffer,
+              let width,
+              let height
         else { return }
 
         let bounds = CGRect(
             x: 0,
             y: 0,
-            width: CVPixelBufferGetWidth(pixelBuffer),
-            height: CVPixelBufferGetHeight(pixelBuffer)
+            width: width,
+            height: height
         )
-        guard let image = Self.imageContext.createCGImage(
+        let conversionToken = timing.flatMap { diagnostics?.beginConversion(timing: $0) }
+        let image = Self.imageContext.createCGImage(
             CIImage(cvPixelBuffer: pixelBuffer),
             from: bounds
-        ) else { return }
-        continuation.yield(LiveThumbnailFrame(windowID: windowID, image: image))
+        )
+        if let conversionToken {
+            diagnostics?.endConversion(
+                conversionToken,
+                succeeded: image != nil,
+                convertedPixelCount: image.map { UInt64($0.width) * UInt64($0.height) } ?? 0
+            )
+        }
+        guard let image else { return }
+
+        if let timing { diagnostics?.recordYielded(timing: timing) }
+        let result = continuation.yield(LiveThumbnailFrame(
+            windowID: windowID,
+            image: image,
+            diagnosticsTiming: timing
+        ))
+        if let timing {
+            switch result {
+            case .enqueued:
+                break
+            case .dropped:
+                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: true)
+            case .terminated:
+                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: false)
+            @unknown default:
+                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: false)
+            }
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
@@ -322,15 +409,28 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
         )
     }
 
-    private static func frameStatus(of sampleBuffer: CMSampleBuffer) -> SCFrameStatus? {
+    private static func frameAttachments(
+        of sampleBuffer: CMSampleBuffer
+    ) -> [SCStreamFrameInfo: Any]? {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
             sampleBuffer,
             createIfNecessary: false
         ) as? [[SCStreamFrameInfo: Any]],
-            let rawValue = attachments.first?[.status] as? Int
+            let first = attachments.first
         else { return nil }
+        return first
+    }
+
+    private static func frameStatus(in attachments: [SCStreamFrameInfo: Any]) -> SCFrameStatus? {
+        guard let rawValue = attachments[.status] as? Int else { return nil }
         return SCFrameStatus(rawValue: rawValue)
     }
+
+    private static func displayTime(in attachments: [SCStreamFrameInfo: Any]) -> UInt64? {
+        if let value = attachments[.displayTime] as? UInt64 { return value }
+        return (attachments[.displayTime] as? NSNumber)?.uint64Value
+    }
+
 }
 
 /// SCStream and its callback object have an explicit shared lifecycle. The

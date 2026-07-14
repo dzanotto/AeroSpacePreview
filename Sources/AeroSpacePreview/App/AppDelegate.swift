@@ -3,14 +3,18 @@ import Carbon.HIToolbox
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let overlay = OverlayController()
+    private let overlay = OverlayController(
+        diagnosticsEnabled: CommandLine.arguments.contains("--debug-hud")
+    )
     private var hotKey: HotKeyManager?
     private var statusItem: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = StatusItemController { [weak self] in
-            self?.overlay.toggle()
-        }
+        statusItem = StatusItemController(
+            onToggleOverlay: { [weak self] in self?.overlay.toggle() },
+            isDiagnosticsEnabled: { [weak self] in self?.overlay.isDiagnosticsEnabled ?? false },
+            onToggleDiagnostics: { [weak self] in self?.overlay.toggleDiagnostics() }
+        )
 
         hotKey = HotKeyManager(
             keyCode: UInt32(kVK_ANSI_S),
@@ -34,5 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if CommandLine.arguments.contains("--show-on-launch") {
             overlay.show()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        overlay.shutdown()
     }
 }

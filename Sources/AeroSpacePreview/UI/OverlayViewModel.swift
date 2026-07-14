@@ -18,6 +18,9 @@ final class OverlayViewModel: ObservableObject {
     /// the focused workspace's entry refreshes when its summon-time frames
     /// arrive with the capture stream.
     @Published var layouts: [String: WorkspaceLayout] = [:]
+    /// Replaced as one immutable value at 2 Hz; nil removes the HUD without
+    /// invalidating or resizing the workspace grid.
+    @Published private(set) var diagnosticsSnapshot: DiagnosticsSnapshot?
 
     let content: OverlayContent
     let actions: OverlayActions
@@ -43,6 +46,10 @@ final class OverlayViewModel: ObservableObject {
     }
 
     var gridColumns: Int { columns }
+
+    func publishDiagnostics(_ snapshot: DiagnosticsSnapshot?) {
+        diagnosticsSnapshot = snapshot
+    }
 
     /// Returns true if the event was consumed.
     func handle(_ event: NSEvent) -> Bool {

@@ -27,6 +27,12 @@ struct OverlayRootView: View {
             }
         }
         .ignoresSafeArea()
+        .overlay(alignment: .topTrailing) {
+            if let snapshot = viewModel.diagnosticsSnapshot {
+                DiagnosticsHUDView(snapshot: snapshot)
+                    .padding(20)
+            }
+        }
     }
 
     private func workspaceGrid(_ snapshot: OverlaySnapshot) -> some View {

@@ -19,6 +19,19 @@ struct OverlaySnapshot: Sendable {
 enum OverlayContent: Sendable {
     case snapshot(OverlaySnapshot)
     case error(String)
+
+    var windowIDsForDiagnostics: [CGWindowID] {
+        guard case .snapshot(let snapshot) = self else { return [] }
+        return snapshot.allWindowIDs
+    }
+
+    var windowLabelsForDiagnostics: [CGWindowID: String] {
+        guard case .snapshot(let snapshot) = self else { return [:] }
+        return Dictionary(
+            snapshot.workspaces.flatMap(\.windows).map { ($0.id, $0.appName) },
+            uniquingKeysWith: { first, _ in first }
+        )
+    }
 }
 
 /// User intents flowing back from the SwiftUI layer to the controller.

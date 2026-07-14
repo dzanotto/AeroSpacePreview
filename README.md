@@ -24,7 +24,7 @@ swift test    # unit tests
 
 The app is an agent (`LSUIElement`): nothing appears in the Dock. It lives in the menu bar
 as a `square.grid.2x2` icon whose menu can show the overlay, toggle **Launch at Login**,
-show an about box, and quit.
+toggle the session-only **Show Diagnostics** HUD, show an about box, and quit.
 
 > **Toolchain note**: the Makefile pins `TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault`.
 > If you invoke `swift` directly and get SDK errors from a custom toolchain, do the same.
@@ -57,6 +57,7 @@ The combination is a single constant in `AppDelegate.swift` if you need to chang
 | type a name prefix | select the matching workspace; a unique exact match switches immediately |
 | Enter | switch to selected workspace |
 | Esc / click backdrop | dismiss |
+| menu-bar **Show Diagnostics** | show/hide the diagnostics HUD for this app session |
 
 Workspaces shown: occupied ones plus the focused one (even if empty), in AeroSpace's
 natural sort order. An initial one-shot pass lets thumbnails pop in progressively
@@ -84,7 +85,14 @@ goal in PLAN.md M7, not wired up yet.
 AeroSpacePreview --dump               # print the AeroSpace snapshot as JSON and exit
 AeroSpacePreview --dump-images DIR    # write a thumbnail/placeholder PNG per window and exit
 AeroSpacePreview --show-on-launch     # summon the overlay immediately (testing)
+AeroSpacePreview --debug-hud          # enable the diagnostics HUD (also available from the menu)
 ```
+
+Diagnostics are off by default and remain available in release builds. The compact top-right
+HUD samples at 2 Hz and reports live-stream/input, conversion, UI-delivery/backlog, latency,
+top-window bandwidth, CPU, memory-footprint, and idle-wakeup metrics. “UI” is delivery to the
+SwiftUI thumbnail store, not proof of physical display presentation. The menu checkmark is
+session-only; toggling it updates an open overlay or takes effect on the next summon.
 
 Each summon logs timing and live-stream startup via NSLog (`make dev` to see it):
 `summon — state 80 ms, capture 290 ms (8/8 windows)` and
