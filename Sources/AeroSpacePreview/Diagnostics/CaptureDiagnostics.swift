@@ -300,6 +300,14 @@ final class CaptureDiagnostics: @unchecked Sendable {
         }
     }
 
+    func recordPreConversionCoalesced(timing: DiagnosticsFrameTiming?) {
+        guard let timing else { return }
+        lockedState.withLock { state in
+            guard state.session?.generation == timing.generation else { return }
+            state.session!.droppedOrCoalescedFrames += 1
+        }
+    }
+
     func recordUIDelivery(
         timing: DiagnosticsFrameTiming?,
         now: UInt64 = mach_absolute_time()

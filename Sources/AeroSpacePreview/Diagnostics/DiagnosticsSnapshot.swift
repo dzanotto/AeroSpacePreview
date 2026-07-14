@@ -185,7 +185,7 @@ enum DiagnosticsHUDFormatter {
             "\($0.label) \(String(format: "%.1f", $0.framesPerSecond)) fps/\(String(format: "%.1f", $0.megapixelsPerSecond)) MPix/s"
         } ?? "n/a"
         return String(
-            format: "AeroSpacePreview: diagnostics — %.1f s; streams %d/%d, failures %d; input %llu frames/%.1f MPix; UI %llu; backlog %llu/max %llu; conversion %@; pipeline lag %@; CPU avg %@/peak %@; memory peak %@; top %@",
+            format: "AeroSpacePreview: diagnostics — %.1f s; streams %d/%d, failures %d; input %llu frames/%.1f MPix; UI %llu; backlog %llu/max %llu, drops %llu; conversion %@; pipeline lag %@; CPU avg %@/peak %@; memory peak %@; top %@",
             snapshot.sessionDurationSeconds,
             capture.streamsStarted,
             capture.requestedWindowCount,
@@ -195,6 +195,7 @@ enum DiagnosticsHUDFormatter {
             delivery.uiDeliveredFrames,
             delivery.currentBacklog,
             delivery.maximumBacklog,
+            delivery.droppedOrCoalescedFrames,
             durationPair(snapshot.conversion.duration),
             durationPair(
                 snapshot.latency.windowServerToUIDelivery

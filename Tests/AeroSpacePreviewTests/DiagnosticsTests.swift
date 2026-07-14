@@ -117,6 +117,29 @@ import Testing
         #expect(snapshot.delivery.droppedOrCoalescedFrames == 0)
     }
 
+    @Test func tracksPreConversionCoalescingWithoutChangingDeliveryBacklog() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1])
+        let start = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "Editor"], now: start)
+
+        let timing = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 100,
+            height: 100,
+            windowServerDisplayMachTime: nil
+        ))
+        collector.recordPreConversionCoalesced(timing: timing)
+
+        let snapshot = try #require(collector.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.delivery.droppedOrCoalescedFrames == 1)
+        #expect(snapshot.delivery.yieldedFrames == 0)
+        #expect(snapshot.delivery.currentBacklog == 0)
+    }
+
     @Test func selectsHighestBandwidthWindowOverLatestInterval() throws {
         let current: [CGWindowID: DiagnosticsWindowCounters] = [
             10: .init(frames: 20, pixels: 8_000_000),
@@ -191,6 +214,9 @@ import Testing
         #expect(text.contains("LAG   WS —  CB —"))
         #expect(text.contains("TOP  —"))
         #expect(!text.contains("presented"))
+
+        let summary = DiagnosticsHUDFormatter.dismissalSummary(emptySnapshot)
+        #expect(summary.contains("backlog 0/max 0, drops 0"))
     }
 
     private var emptySnapshot: DiagnosticsSnapshot {

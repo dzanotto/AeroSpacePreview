@@ -168,7 +168,10 @@ struct CaptureService: Sendable {
                 if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
 
                 await lifetime.install(handles.map { handle in
-                    { try? await handle.stream.stopCapture() }
+                    {
+                        handle.output.stop()
+                        try? await handle.stream.stopCapture()
+                    }
                 })
 
                 guard !handles.isEmpty, !Task.isCancelled else {
@@ -299,12 +302,14 @@ struct CaptureService: Sendable {
 private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private static let imageContext = CIContext(options: [.cacheIntermediates: false])
 
-    /// Serial per window preserves frame order; separate window queues still
-    /// let unrelated animated windows convert frames concurrently.
+    /// ScreenCaptureKit intake stays unblocked while the separate serial
+    /// conversion queue drains at most one active and one pending frame.
     let queue: DispatchQueue
+    private let conversionQueue: DispatchQueue
     private let windowID: CGWindowID
     private let continuation: AsyncStream<LiveThumbnailFrame>.Continuation
     private let diagnostics: CaptureDiagnostics?
+    private let frameCoalescer = LatestFrameCoalescer<PendingLiveFrame>()
 
     init(
         windowID: CGWindowID,
@@ -316,6 +321,10 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
         self.diagnostics = diagnostics
         queue = DispatchQueue(
             label: "com.dariozanotto.aerospacepreview.live-capture.\(windowID)",
+            qos: .userInteractive
+        )
+        conversionQueue = DispatchQueue(
+            label: "com.dariozanotto.aerospacepreview.live-conversion.\(windowID)",
             qos: .userInteractive
         )
     }
@@ -361,15 +370,51 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
               let height
         else { return }
 
+        let frame = PendingLiveFrame(
+            pixelBuffer: pixelBuffer,
+            width: width,
+            height: height,
+            diagnosticsTiming: timing
+        )
+        let submission = frameCoalescer.submit(frame)
+        if let replaced = submission.replacedElement {
+            diagnostics?.recordPreConversionCoalesced(timing: replaced.diagnosticsTiming)
+        }
+        guard submission.shouldStartProcessing else { return }
+
+        conversionQueue.async { [self] in
+            drain(startingWith: frame)
+        }
+    }
+
+    func stop() {
+        if let pending = frameCoalescer.stop() {
+            diagnostics?.recordPreConversionCoalesced(timing: pending.diagnosticsTiming)
+        }
+    }
+
+    private func drain(startingWith firstFrame: PendingLiveFrame) {
+        var frame: PendingLiveFrame? = firstFrame
+        while let current = frame {
+            if frameCoalescer.isActive {
+                convertAndPublish(current)
+            }
+            frame = frameCoalescer.next()
+        }
+    }
+
+    private func convertAndPublish(_ frame: PendingLiveFrame) {
         let bounds = CGRect(
             x: 0,
             y: 0,
-            width: width,
-            height: height
+            width: frame.width,
+            height: frame.height
         )
-        let conversionToken = timing.flatMap { diagnostics?.beginConversion(timing: $0) }
+        let conversionToken = frame.diagnosticsTiming.flatMap {
+            diagnostics?.beginConversion(timing: $0)
+        }
         let image = Self.imageContext.createCGImage(
-            CIImage(cvPixelBuffer: pixelBuffer),
+            CIImage(cvPixelBuffer: frame.pixelBuffer),
             from: bounds
         )
         if let conversionToken {
@@ -379,15 +424,17 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
                 convertedPixelCount: image.map { UInt64($0.width) * UInt64($0.height) } ?? 0
             )
         }
-        guard let image else { return }
+        guard let image, frameCoalescer.isActive else { return }
 
-        if let timing { diagnostics?.recordYielded(timing: timing) }
+        if let timing = frame.diagnosticsTiming {
+            diagnostics?.recordYielded(timing: timing)
+        }
         let result = continuation.yield(LiveThumbnailFrame(
             windowID: windowID,
             image: image,
-            diagnosticsTiming: timing
+            diagnosticsTiming: frame.diagnosticsTiming
         ))
-        if let timing {
+        if let timing = frame.diagnosticsTiming {
             switch result {
             case .enqueued:
                 break
@@ -402,6 +449,7 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
     }
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        stop()
         NSLog(
             "AeroSpacePreview: live capture stopped for window %u: %@",
             windowID,
@@ -431,6 +479,13 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
         return (attachments[.displayTime] as? NSNumber)?.uint64Value
     }
 
+}
+
+private struct PendingLiveFrame: @unchecked Sendable {
+    let pixelBuffer: CVPixelBuffer
+    let width: Int
+    let height: Int
+    let diagnosticsTiming: DiagnosticsFrameTiming?
 }
 
 /// SCStream and its callback object have an explicit shared lifecycle. The

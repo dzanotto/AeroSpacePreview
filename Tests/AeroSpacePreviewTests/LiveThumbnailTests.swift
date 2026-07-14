@@ -50,6 +50,40 @@ import Testing
         count = await counter.value
         #expect(count == 2)
     }
+
+    @Test func coalescesToTheNewestPendingFrame() {
+        let coalescer = LatestFrameCoalescer<Int>()
+
+        let first = coalescer.submit(1)
+        #expect(first.shouldStartProcessing)
+        #expect(first.replacedElement == nil)
+
+        let second = coalescer.submit(2)
+        #expect(!second.shouldStartProcessing)
+        #expect(second.replacedElement == nil)
+
+        let third = coalescer.submit(3)
+        #expect(!third.shouldStartProcessing)
+        #expect(third.replacedElement == 2)
+
+        #expect(coalescer.next() == 3)
+        #expect(coalescer.next() == nil)
+        #expect(coalescer.submit(4).shouldStartProcessing)
+    }
+
+    @Test func stoppedCoalescerRejectsAndClearsPendingFrames() {
+        let coalescer = LatestFrameCoalescer<Int>()
+        _ = coalescer.submit(1)
+        _ = coalescer.submit(2)
+
+        #expect(coalescer.stop() == 2)
+        #expect(!coalescer.isActive)
+        #expect(coalescer.next() == nil)
+
+        let rejected = coalescer.submit(3)
+        #expect(!rejected.shouldStartProcessing)
+        #expect(rejected.replacedElement == 3)
+    }
 }
 
 private actor StopCounter {
