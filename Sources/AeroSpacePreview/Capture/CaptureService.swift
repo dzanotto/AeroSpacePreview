@@ -28,6 +28,9 @@ struct LiveThumbnailFrame: Sendable {
 
 /// One-shot and change-aware live window capture via ScreenCaptureKit.
 struct CaptureService: Sendable {
+    /// ScreenCaptureKit's documented minimum queue depth.
+    static let liveStreamQueueDepth = 3
+
     /// Generous: the overlay never blocks on a capture (placeholders fill in),
     /// so the timeout only decides when to give up on a stuck window. M6
     /// measurement: 250 ms was tight enough that the back of a 9-window queue
@@ -278,7 +281,7 @@ struct CaptureService: Sendable {
             value: 1,
             timescale: CMTimeScale(max(1, framesPerSecond))
         )
-        config.queueDepth = 2
+        config.queueDepth = liveStreamQueueDepth
         config.showsCursor = false
         config.ignoreShadowsSingleWindow = true
         config.capturesAudio = false

@@ -4,6 +4,10 @@ import Testing
 @testable import AeroSpacePreview
 
 @Suite struct LiveThumbnailTests {
+    @Test func liveStreamsUseScreenCaptureKitsMinimumQueueDepth() {
+        #expect(CaptureService.liveStreamQueueDepth == 3)
+    }
+
     @Test func publishesOnlyDisplayableChangedFrames() {
         #expect(CaptureService.shouldPublish(frameStatus: .started))
         #expect(CaptureService.shouldPublish(frameStatus: .complete))
