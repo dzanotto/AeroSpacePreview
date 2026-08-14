@@ -145,92 +145,95 @@ struct CaptureService: Sendable {
         framesPerSecond: Int = 30,
         diagnostics: CaptureDiagnostics? = nil
     ) -> AsyncStream<LiveThumbnailFrame> {
-        AsyncStream { continuation in
-            let lifetime = LiveStreamLifetime()
-            let task = Task {
-                defer { continuation.finish() }
-                guard !windowIDs.isEmpty else { return }
-                let startupToken = diagnostics?.beginLiveStreamStartup()
-                guard let content = try? await SCShareableContent
-                    .excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                else {
-                    if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
-                    return
-                }
+        let delivery = LiveFrameDelivery(diagnostics: diagnostics)
+        let lifetime = LiveStreamLifetime()
+        let task = Task {
+            defer { delivery.finish() }
+            guard !windowIDs.isEmpty else { return }
+            let startupToken = diagnostics?.beginLiveStreamStartup()
+            guard let content = try? await SCShareableContent
+                .excludingDesktopWindows(false, onScreenWindowsOnly: false)
+            else {
+                if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
+                return
+            }
 
-                let wanted = Set(windowIDs)
-                let targets = content.windows.filter { wanted.contains($0.windowID) }
-                let handles = await withTaskGroup(
-                    of: LiveStreamHandle?.self,
-                    returning: [LiveStreamHandle].self
-                ) { group in
-                    for window in targets {
-                        let windowID = window.windowID
-                        let boxed = UncheckedSendable(window)
-                        group.addTask {
-                            do {
-                                let handle = try await Self.startLiveStream(
-                                    for: boxed.value,
-                                    maxPixel: maxPixel,
-                                    framesPerSecond: framesPerSecond,
-                                    continuation: continuation,
-                                    diagnostics: diagnostics
-                                )
-                                diagnostics?.recordStreamStarted(windowID: windowID)
-                                return handle
-                            } catch {
-                                diagnostics?.recordStreamStartupFailure(windowID: windowID)
-                                NSLog(
-                                    "AeroSpacePreview: live capture failed to start for window %u: %@",
-                                    windowID,
-                                    String(describing: error)
-                                )
-                                return nil
-                            }
+            let wanted = Set(windowIDs)
+            let targets = content.windows.filter { wanted.contains($0.windowID) }
+            let handles = await withTaskGroup(
+                of: LiveStreamHandle?.self,
+                returning: [LiveStreamHandle].self
+            ) { group in
+                for window in targets {
+                    let windowID = window.windowID
+                    let boxed = UncheckedSendable(window)
+                    group.addTask {
+                        do {
+                            let handle = try await Self.startLiveStream(
+                                for: boxed.value,
+                                maxPixel: maxPixel,
+                                framesPerSecond: framesPerSecond,
+                                delivery: delivery,
+                                diagnostics: diagnostics
+                            )
+                            diagnostics?.recordStreamStarted(windowID: windowID)
+                            return handle
+                        } catch {
+                            diagnostics?.recordStreamStartupFailure(windowID: windowID)
+                            NSLog(
+                                "AeroSpacePreview: live capture failed to start for window %u: %@",
+                                windowID,
+                                String(describing: error)
+                            )
+                            return nil
                         }
                     }
-
-                    var result: [LiveStreamHandle] = []
-                    for await handle in group {
-                        if let handle { result.append(handle) }
-                    }
-                    return result
-                }
-                if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
-
-                await lifetime.install(handles.map { handle in
-                    {
-                        handle.output.stop()
-                        try? await handle.stream.stopCapture()
-                    }
-                })
-
-                guard !handles.isEmpty, !Task.isCancelled else {
-                    await lifetime.stop()
-                    return
                 }
 
-                NSLog(
-                    "AeroSpacePreview: live capture — %ld/%ld streams at up to %ld fps",
-                    handles.count,
-                    targets.count,
-                    framesPerSecond
-                )
-
-                do {
-                    // AsyncStream termination cancels this task. Sleeping
-                    // avoids polling while the output callbacks yield frames.
-                    try await Task.sleep(for: .seconds(60 * 60 * 24 * 365))
-                } catch {
-                    // Cancellation is the normal dismissal path.
+                var result: [LiveStreamHandle] = []
+                for await handle in group {
+                    if let handle { result.append(handle) }
                 }
-                await lifetime.stop()
+                return result
             }
-            continuation.onTermination = { _ in
+            if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
+
+            await lifetime.install(handles.map { handle in
+                {
+                    handle.output.stop()
+                    try? await handle.stream.stopCapture()
+                }
+            })
+
+            guard !handles.isEmpty, !Task.isCancelled else {
+                await lifetime.stop()
+                return
+            }
+
+            NSLog(
+                "AeroSpacePreview: live capture — %ld/%ld streams at up to %ld fps",
+                handles.count,
+                targets.count,
+                framesPerSecond
+            )
+
+            do {
+                // AsyncStream cancellation cancels this task. Sleeping avoids
+                // polling while the output callbacks publish keyed frames.
+                try await Task.sleep(for: .seconds(60 * 60 * 24 * 365))
+            } catch {
+                // Cancellation is the normal dismissal path.
+            }
+            await lifetime.stop()
+        }
+        return AsyncStream(
+            unfolding: { await delivery.next() },
+            onCancel: {
                 task.cancel()
+                delivery.finish()
                 Task { await lifetime.stop() }
             }
-        }
+        )
     }
 
     static func shouldPublish(frameStatus: SCFrameStatus) -> Bool {
@@ -362,7 +365,7 @@ struct CaptureService: Sendable {
         for window: SCWindow,
         maxPixel: Int,
         framesPerSecond: Int,
-        continuation: AsyncStream<LiveThumbnailFrame>.Continuation,
+        delivery: LiveFrameDelivery,
         diagnostics: CaptureDiagnostics?
     ) async throws -> LiveStreamHandle {
         let filter = SCContentFilter(desktopIndependentWindow: window)
@@ -382,7 +385,7 @@ struct CaptureService: Sendable {
 
         let output = LiveStreamOutput(
             windowID: window.windowID,
-            continuation: continuation,
+            delivery: delivery,
             diagnostics: diagnostics
         )
         let stream = SCStream(filter: filter, configuration: config, delegate: output)
@@ -404,17 +407,17 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
     let queue: DispatchQueue
     private let conversionQueue: DispatchQueue
     private let windowID: CGWindowID
-    private let continuation: AsyncStream<LiveThumbnailFrame>.Continuation
+    private let delivery: LiveFrameDelivery
     private let diagnostics: CaptureDiagnostics?
     private let frameCoalescer = LatestFrameCoalescer<PendingLiveFrame>()
 
     init(
         windowID: CGWindowID,
-        continuation: AsyncStream<LiveThumbnailFrame>.Continuation,
+        delivery: LiveFrameDelivery,
         diagnostics: CaptureDiagnostics?
     ) {
         self.windowID = windowID
-        self.continuation = continuation
+        self.delivery = delivery
         self.diagnostics = diagnostics
         queue = DispatchQueue(
             label: "com.dariozanotto.aerospacepreview.live-capture.\(windowID)",
@@ -523,26 +526,11 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
         }
         guard let image, frameCoalescer.isActive else { return }
 
-        if let timing = frame.diagnosticsTiming {
-            diagnostics?.recordYielded(timing: timing)
-        }
-        let result = continuation.yield(LiveThumbnailFrame(
+        delivery.publish(LiveThumbnailFrame(
             windowID: windowID,
             image: image,
             diagnosticsTiming: frame.diagnosticsTiming
         ))
-        if let timing = frame.diagnosticsTiming {
-            switch result {
-            case .enqueued:
-                break
-            case .dropped:
-                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: true)
-            case .terminated:
-                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: false)
-            @unknown default:
-                diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: false)
-            }
-        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: any Error) {
@@ -581,6 +569,35 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
 private enum OneShotCaptureResult: Sendable {
     case desktopBackground(CGImage?)
     case thumbnail(CGWindowID, CGImage?)
+}
+
+private final class LiveFrameDelivery: @unchecked Sendable {
+    private let buffer = LatestByKeyBuffer<CGWindowID, LiveThumbnailFrame>()
+    private let diagnostics: CaptureDiagnostics?
+
+    init(diagnostics: CaptureDiagnostics?) {
+        self.diagnostics = diagnostics
+    }
+
+    func publish(_ frame: LiveThumbnailFrame) {
+        _ = buffer.submit(frame, for: frame.windowID) { [diagnostics] replaced in
+            diagnostics?.recordYielded(
+                timing: frame.diagnosticsTiming,
+                replacing: replaced?.diagnosticsTiming
+            )
+        }
+    }
+
+    func next() async -> LiveThumbnailFrame? {
+        await buffer.next()
+    }
+
+    func finish() {
+        for frame in buffer.finish() {
+            guard let timing = frame.diagnosticsTiming else { continue }
+            diagnostics?.recordYieldRejected(timing: timing, droppedOrCoalesced: false)
+        }
+    }
 }
 
 private struct PendingLiveFrame: @unchecked Sendable {

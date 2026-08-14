@@ -110,6 +110,52 @@ import Testing
         #expect(!rejected.shouldStartProcessing)
         #expect(rejected.replacedElement == 3)
     }
+
+    @Test func keyedBufferKeepsOnlyTheNewestFramePerWindow() async {
+        let buffer = LatestByKeyBuffer<CGWindowID, Int>()
+        let firstID: CGWindowID = 101
+        let secondID: CGWindowID = 202
+
+        _ = buffer.submit(1, for: firstID)
+        _ = buffer.submit(10, for: secondID)
+        var replaced: Int?
+        for frame in 2...100 {
+            replaced = buffer.submit(frame, for: firstID).replacedElement
+        }
+
+        #expect(replaced == 99)
+        #expect(buffer.pendingCount == 2)
+        #expect(await buffer.next() == 100)
+        #expect(await buffer.next() == 10)
+    }
+
+    @Test func keyedBufferFinishesAndRejectsFurtherFrames() async {
+        let buffer = LatestByKeyBuffer<CGWindowID, Int>()
+        _ = buffer.submit(1, for: 101)
+        _ = buffer.submit(2, for: 202)
+
+        #expect(buffer.finish() == [1, 2])
+        #expect(buffer.pendingCount == 0)
+        #expect(await buffer.next() == nil)
+        #expect(!buffer.submit(3, for: 303).accepted)
+    }
+
+    @Test func cancellingPullBasedStreamFinishesWaitingKeyedBuffer() async {
+        let buffer = LatestByKeyBuffer<CGWindowID, Int>()
+        let stream = AsyncStream(
+            unfolding: { await buffer.next() },
+            onCancel: { _ = buffer.finish() }
+        )
+        let consumer = Task {
+            for await _ in stream {}
+        }
+
+        await Task.yield()
+        consumer.cancel()
+        await consumer.value
+
+        #expect(!buffer.submit(1, for: 101).accepted)
+    }
 }
 
 private actor StopCounter {

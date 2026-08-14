@@ -281,9 +281,28 @@ final class CaptureDiagnostics: @unchecked Sendable {
     /// Reserves backlog before yielding so a concurrently resumed consumer
     /// cannot temporarily make consumed exceed yielded.
     func recordYielded(timing: DiagnosticsFrameTiming) {
+        recordYielded(timing: timing, replacing: nil)
+    }
+
+    /// Atomically accounts for a newly pending frame and the older pending
+    /// frame it replaces, keeping measured backlog aligned with the keyed
+    /// delivery buffer's actual bound.
+    func recordYielded(
+        timing: DiagnosticsFrameTiming?,
+        replacing replacedTiming: DiagnosticsFrameTiming?
+    ) {
         lockedState.withLock { state in
-            guard state.session?.generation == timing.generation else { return }
-            state.session!.yieldedFrames += 1
+            guard state.session != nil else { return }
+            if let replacedTiming,
+               state.session!.generation == replacedTiming.generation {
+                if state.session!.yieldedFrames > state.session!.uiDeliveredFrames {
+                    state.session!.yieldedFrames -= 1
+                }
+                state.session!.droppedOrCoalescedFrames += 1
+            }
+            if let timing, state.session!.generation == timing.generation {
+                state.session!.yieldedFrames += 1
+            }
             let backlog = state.session!.yieldedFrames - min(
                 state.session!.yieldedFrames,
                 state.session!.uiDeliveredFrames

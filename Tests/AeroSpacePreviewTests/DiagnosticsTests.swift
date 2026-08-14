@@ -140,6 +140,38 @@ import Testing
         #expect(snapshot.delivery.currentBacklog == 0)
     }
 
+    @Test func replacingPendingFrameKeepsDeliveryBacklogBounded() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1])
+        let start = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "Editor"], now: start)
+
+        let first = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 100,
+            height: 100,
+            windowServerDisplayMachTime: nil
+        ))
+        collector.recordYielded(timing: first)
+        let newest = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 100,
+            height: 100,
+            windowServerDisplayMachTime: nil
+        ))
+        collector.recordYielded(timing: newest, replacing: first)
+
+        let snapshot = try #require(collector.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.delivery.yieldedFrames == 1)
+        #expect(snapshot.delivery.currentBacklog == 1)
+        #expect(snapshot.delivery.maximumBacklog == 1)
+        #expect(snapshot.delivery.droppedOrCoalescedFrames == 1)
+    }
+
     @Test func selectsHighestBandwidthWindowOverLatestInterval() throws {
         let current: [CGWindowID: DiagnosticsWindowCounters] = [
             10: .init(frames: 20, pixels: 8_000_000),
