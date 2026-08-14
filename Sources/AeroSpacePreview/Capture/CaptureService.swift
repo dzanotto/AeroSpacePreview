@@ -139,12 +139,12 @@ struct CaptureService: Sendable {
     /// emits complete frames when pixels change and idle frames otherwise;
     /// only displayable changed frames reach the caller, so static thumbnails
     /// retain their one-shot image while animation can update at up to 30 fps.
-    func liveThumbnailStream(
+    func startLiveThumbnailCapture(
         for windowIDs: [CGWindowID],
         maxPixel: Int,
         framesPerSecond: Int = 30,
         diagnostics: CaptureDiagnostics? = nil
-    ) -> AsyncStream<LiveThumbnailFrame> {
+    ) -> LiveThumbnailCapture {
         let delivery = LiveFrameDelivery(diagnostics: diagnostics)
         let lifetime = LiveStreamLifetime()
         let task = Task {
@@ -226,13 +226,14 @@ struct CaptureService: Sendable {
             }
             await lifetime.stop()
         }
-        return AsyncStream(
-            unfolding: { await delivery.next() },
-            onCancel: {
-                task.cancel()
-                delivery.finish()
-                Task { await lifetime.stop() }
-            }
+        let stop: @Sendable () -> Void = {
+            task.cancel()
+            delivery.finish()
+            Task { await lifetime.stop() }
+        }
+        return LiveThumbnailCapture(
+            next: { await delivery.next() },
+            stopOperation: stop
         )
     }
 

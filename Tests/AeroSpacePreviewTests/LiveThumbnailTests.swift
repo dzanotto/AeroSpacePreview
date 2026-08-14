@@ -1,4 +1,5 @@
 import CoreGraphics
+import os
 import ScreenCaptureKit
 import Testing
 @testable import AeroSpacePreview
@@ -75,6 +76,37 @@ import Testing
         await lifetime.install([{ await counter.increment() }])
         count = await counter.value
         #expect(count == 2)
+    }
+
+    @Test func explicitlyStoppingLiveCaptureFinishesFramesAndRunsCleanupOnce() async throws {
+        let buffer = LatestByKeyBuffer<CGWindowID, LiveThumbnailFrame>()
+        let stopCounter = SynchronousStopCounter()
+        let image = try #require(PlaceholderRenderer.render(
+            bundleID: "com.does.not.exist",
+            size: CGSize(width: 8, height: 8)
+        ))
+        let capture = LiveThumbnailCapture(
+            next: { await buffer.next() },
+            stopOperation: {
+                stopCounter.increment()
+                _ = buffer.finish()
+            }
+        )
+        let consumer = Task {
+            for await _ in capture.frames {}
+        }
+
+        await Task.yield()
+        capture.stop()
+        await consumer.value
+        capture.stop()
+
+        #expect(stopCounter.value == 1)
+        #expect(!buffer.submit(LiveThumbnailFrame(
+            windowID: 101,
+            image: image,
+            diagnosticsTiming: nil
+        ), for: 101).accepted)
     }
 
     @Test func coalescesToTheNewestPendingFrame() {
@@ -155,6 +187,18 @@ import Testing
         await consumer.value
 
         #expect(!buffer.submit(1, for: 101).accepted)
+    }
+}
+
+private final class SynchronousStopCounter: @unchecked Sendable {
+    private let lockedValue = OSAllocatedUnfairLock(initialState: 0)
+
+    var value: Int {
+        lockedValue.withLock { $0 }
+    }
+
+    func increment() {
+        lockedValue.withLock { $0 += 1 }
     }
 }
 

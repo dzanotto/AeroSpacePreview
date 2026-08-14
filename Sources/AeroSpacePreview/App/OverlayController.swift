@@ -21,9 +21,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var diagnosticsTask: Task<Void, Never>?
     private weak var currentViewModel: OverlayViewModel?
     private var harvestTask: Task<Void, Never>?
-    /// Covers both the progressive one-shot pass and the live-stream phase.
-    /// Dismissal cancels it, which terminates and stops every SCStream.
+    /// Covers both the progressive one-shot pass and the live-stream consumer.
+    /// Dismissal cancels it in addition to explicitly stopping `liveCapture`.
     private var captureTask: Task<Void, Never>?
+    /// Explicit owner for the SCStreams started after the one-shot pass. The
+    /// task above consumes its frames, but task cancellation is not relied on
+    /// as the only producer-shutdown signal.
+    private var liveCapture: LiveThumbnailCapture?
 
     var isVisible: Bool { panel?.isVisible ?? false }
     var isDiagnosticsEnabled: Bool { diagnosticsEnabled }
@@ -56,7 +60,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else { return }
         let targetDisplayID = Self.displayID(for: targetScreen)
         isLoading = true
-        captureTask?.cancel()
+        stopCapture()
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
@@ -133,13 +137,20 @@ final class OverlayController: NSObject, NSWindowDelegate {
                   !snapshot.permissionDenied,
                   !snapshot.allWindowIDs.isEmpty
             else { return }
-            let liveStream = capture.liveThumbnailStream(
+            let liveCapture = capture.startLiveThumbnailCapture(
                 for: snapshot.allWindowIDs,
                 maxPixel: 320,
                 framesPerSecond: 30,
                 diagnostics: self.diagnostics
             )
-            for await frame in liveStream {
+            self.liveCapture = liveCapture
+            defer {
+                liveCapture.stop()
+                if self.liveCapture === liveCapture {
+                    self.liveCapture = nil
+                }
+            }
+            for await frame in liveCapture.frames {
                 guard !Task.isCancelled, self.isVisible else { return }
                 viewModel.thumbnails.update(frame.image, for: frame.windowID)
                 self.diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
@@ -148,9 +159,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
+        stopCapture()
         guard let panel, isVisible, !isHiding else { return }
-        captureTask?.cancel()
-        captureTask = nil
         stopDiagnosticsSession(logSummary: true)
         isHiding = true
         NSAnimationContext.runAnimationGroup({ context in
@@ -289,9 +299,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
+        stopCapture()
+        stopDiagnosticsSession(logSummary: true)
+    }
+
+    /// Stops both stages of capture. Live streams have their own producer task,
+    /// so dismissing the overlay signals that producer directly as well as
+    /// cancelling the controller's consumer/one-shot task.
+    private func stopCapture() {
+        liveCapture?.stop()
+        liveCapture = nil
         captureTask?.cancel()
         captureTask = nil
-        stopDiagnosticsSession(logSummary: true)
     }
 
     /// Runs an aerospace action off the main actor and dismisses immediately —
