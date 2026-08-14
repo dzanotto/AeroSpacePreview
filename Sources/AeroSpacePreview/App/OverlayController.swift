@@ -196,8 +196,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
         let actions = OverlayActions(
             dismiss: { [weak self] in self?.hide() },
-            selectWorkspace: { [weak self] name in self?.perform { try $0.switchToWorkspace(name) } },
-            focusWindow: { [weak self] id in self?.perform { try $0.focusWindow(id: id) } }
+            selectWorkspace: { [weak self] name in self?.perform { try await $0.switchToWorkspace(name) } },
+            focusWindow: { [weak self] id in self?.perform { try await $0.focusWindow(id: id) } }
         )
 
         let viewModel = OverlayViewModel(
@@ -296,17 +296,17 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     /// Runs an aerospace action off the main actor and dismisses immediately —
     /// the workspace switch itself is the visual feedback.
-    private func perform(_ action: @escaping @Sendable (AeroSpaceClient) throws -> Void) {
+    private func perform(_ action: @escaping @Sendable (AeroSpaceClient) async throws -> Void) {
         hide()
         guard let client else { return }
-        Task.detached(priority: .userInitiated) {
+        Task(priority: .userInitiated) {
             do {
-                try action(client)
+                try await action(client)
             } catch {
                 NSLog("AeroSpacePreview: action failed: \(error)")
                 return
             }
-            await self.scheduleFocusedWorkspaceHarvest()
+            self.scheduleFocusedWorkspaceHarvest()
         }
     }
 

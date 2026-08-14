@@ -1,9 +1,11 @@
 import CoreGraphics
 import Foundation
 
-/// Thin synchronous wrapper around the `aerospace` CLI. Callers that care
-/// about latency (the overlay) invoke it off the main thread.
+/// Async wrapper around the `aerospace` CLI.
 struct AeroSpaceClient: Sendable {
+    static let stdoutLimit = 4 * 1024 * 1024
+    static let stderrLimit = 256 * 1024
+
     let cliPath: String
     var timeout: TimeInterval = 2.0
 
@@ -29,22 +31,22 @@ struct AeroSpaceClient: Sendable {
         // Each CLI invocation costs tens of ms of process overhead (measured
         // ~60-95 ms in M6); the three queries are independent, so run them
         // concurrently — the snapshot costs one round-trip, not three.
-        let client = self
-        let windowsTask = Task.detached {
-            try client.run(["list-windows", "--all", "--format", AeroSpaceParser.windowFormat])
-        }
-        let focusedWorkspaceTask = Task.detached {
-            try client.run(["list-workspaces", "--focused", "--format", "%{workspace}"])
-        }
+        async let windowsOutput = run([
+            "list-windows", "--all", "--format", AeroSpaceParser.windowFormat,
+        ])
+        async let focusedWorkspaceOutput = run([
+            "list-workspaces", "--focused", "--format", "%{workspace}",
+        ])
         // No focused window is a legal state (e.g. empty workspace).
-        let focusedWindowTask = Task.detached {
-            try? client.run(["list-windows", "--focused", "--format", "%{window-id}"])
-        }
+        async let focusedWindowOutput = try? run([
+            "list-windows", "--focused", "--format", "%{window-id}",
+        ])
 
-        let windowRows = try AeroSpaceParser.parseWindowRows(await windowsTask.value)
-        let focusedWorkspace = try await focusedWorkspaceTask.value
+        let outputs = try await (windowsOutput, focusedWorkspaceOutput, focusedWindowOutput)
+        let windowRows = try AeroSpaceParser.parseWindowRows(outputs.0)
+        let focusedWorkspace = outputs.1
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let focusedWindowID = await focusedWindowTask.value
+        let focusedWindowID = outputs.2
             .flatMap { CGWindowID($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
         return AeroSpaceParser.buildSnapshot(
@@ -57,15 +59,15 @@ struct AeroSpaceClient: Sendable {
     /// The focused workspace and its window IDs — the minimal query for a
     /// layout harvest after a workspace switch (M7).
     func fetchFocusedWorkspaceWindows() async throws -> (workspace: String, windowIDs: [CGWindowID]) {
-        let client = self
-        let workspaceTask = Task.detached {
-            try client.run(["list-workspaces", "--focused", "--format", "%{workspace}"])
-        }
-        let windowsTask = Task.detached {
-            try client.run(["list-windows", "--workspace", "focused", "--format", "%{window-id}"])
-        }
-        let workspace = try await workspaceTask.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let windowIDs = try await windowsTask.value
+        async let workspaceOutput = run([
+            "list-workspaces", "--focused", "--format", "%{workspace}",
+        ])
+        async let windowsOutput = run([
+            "list-windows", "--workspace", "focused", "--format", "%{window-id}",
+        ])
+        let outputs = try await (workspaceOutput, windowsOutput)
+        let workspace = outputs.0.trimmingCharacters(in: .whitespacesAndNewlines)
+        let windowIDs = outputs.1
             .split(separator: "\n")
             .compactMap { CGWindowID($0.trimmingCharacters(in: .whitespaces)) }
         return (workspace, windowIDs)
@@ -73,75 +75,68 @@ struct AeroSpaceClient: Sendable {
 
     // MARK: - Actions
 
-    func switchToWorkspace(_ name: String) throws {
-        _ = try run(["workspace", name])
+    func switchToWorkspace(_ name: String) async throws {
+        _ = try await run(["workspace", name])
     }
 
-    func focusWindow(id: CGWindowID) throws {
-        _ = try run(["focus", "--window-id", String(id)])
+    func focusWindow(id: CGWindowID) async throws {
+        _ = try await run(["focus", "--window-id", String(id)])
     }
 
     // MARK: - Process plumbing
 
     @discardableResult
-    private func run(_ arguments: [String]) throws -> String {
+    private func run(_ arguments: [String]) async throws -> String {
         let commandLabel = "aerospace " + arguments.joined(separator: " ")
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: cliPath)
-        process.arguments = arguments
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        process.standardInput = FileHandle.nullDevice
-
+        let runner = AsyncProcessRunner(configuration: .init(
+            timeout: timeout,
+            stdoutLimit: Self.stdoutLimit,
+            stderrLimit: Self.stderrLimit
+        ))
+        let output: AsyncProcessOutput
         do {
-            try process.run()
-        } catch {
-            throw AeroSpaceError.cliNotFound(searched: [cliPath])
-        }
-
-        // Drain stdout on a background queue; EOF arrives when the process
-        // exits, which doubles as our completion signal. Draining while the
-        // process runs avoids pipe-buffer deadlock on large output.
-        let outBox = LockedBox<Data>(Data())
-        let done = DispatchSemaphore(value: 0)
-        let outHandle = stdout.fileHandleForReading
-        DispatchQueue.global(qos: .userInitiated).async {
-            outBox.value = outHandle.readDataToEndOfFile()
-            done.signal()
-        }
-
-        if done.wait(timeout: .now() + timeout) == .timedOut {
-            process.terminate()
+            output = try await runner.run(
+                executableURL: URL(fileURLWithPath: cliPath),
+                arguments: arguments
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch AsyncProcessRunnerError.timedOut {
             throw AeroSpaceError.timeout(command: commandLabel)
+        } catch AsyncProcessRunnerError.outputLimitExceeded(let stream, let limit) {
+            throw AeroSpaceError.outputTooLarge(
+                command: commandLabel,
+                stream: stream.rawValue,
+                limit: limit
+            )
+        } catch AsyncProcessRunnerError.launchFailed {
+            throw AeroSpaceError.cliNotFound(searched: [cliPath])
+        } catch {
+            throw AeroSpaceError.commandFailed(
+                command: commandLabel,
+                exitCode: -1,
+                stderr: String(describing: error)
+            )
         }
-        process.waitUntilExit()
 
-        guard process.terminationStatus == 0 else {
-            let errText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-            if errText.localizedCaseInsensitiveContains("server") {
+        guard output.exitCode == 0 else {
+            let errText = String(decoding: output.stderr, as: UTF8.self)
+            if Self.stderrMeansServerNotRunning(errText) {
                 throw AeroSpaceError.serverNotRunning
             }
             throw AeroSpaceError.commandFailed(
                 command: commandLabel,
-                exitCode: process.terminationStatus,
+                exitCode: output.exitCode,
                 stderr: errText.trimmingCharacters(in: .whitespacesAndNewlines)
             )
         }
-        return String(data: outBox.value, encoding: .utf8) ?? ""
+        return String(decoding: output.stdout, as: UTF8.self)
     }
-}
 
-/// Minimal lock-guarded cell so the pipe-drain closure can hand data across
-/// threads under Swift 6 strict concurrency.
-private final class LockedBox<T: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: T
-    init(_ value: T) { stored = value }
-    var value: T {
-        get { lock.lock(); defer { lock.unlock() }; return stored }
-        set { lock.lock(); defer { lock.unlock() }; stored = newValue }
+    static func stderrMeansServerNotRunning(_ stderr: String) -> Bool {
+        stderr.range(
+            of: "Can't connect to AeroSpace server. Is AeroSpace.app running?",
+            options: [.caseInsensitive, .diacriticInsensitive]
+        ) != nil
     }
 }

@@ -32,7 +32,7 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 | ID | Priority | Status | Finding |
 |---|---|---|---|
 | R-01 | P1 | Resolved | Bound the live-frame stream |
-| R-02 | P1 | Open | Replace the synchronous subprocess runner |
+| R-02 | P1 | Resolved | Replace the synchronous subprocess runner |
 | R-03 | P1 | Open | Clarify or strengthen capture timeouts |
 | R-04 | P2 | Open | Split capture and overlay lifecycle responsibilities |
 | R-05 | P2 | Open | Handle large workspace counts |
@@ -60,16 +60,13 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 ### R-02 — Replace the synchronous subprocess runner
 
 - **Priority:** P1
-- **Status:** Open
+- **Status:** Resolved
 - **Area:** AeroSpace integration / concurrency
-- **Evidence:** `AeroSpaceClient.run` drains stdout concurrently but reads stderr only after process completion. A subprocess producing enough stderr can fill its pipe, block before closing stdout, and be misreported as a timeout. On timeout, the code calls `terminate()` and throws without waiting for exit or explicitly completing both pipe drains. Snapshot queries use independent `Task.detached` operations, so they do not inherit structured cancellation or task priority.
-- **Impact:** Possible pipe deadlock, incomplete process cleanup, and work continuing after the requesting task is cancelled.
-- **Candidate direction:** Introduce a reusable asynchronous process runner that drains stdout and stderr concurrently, awaits termination, and couples timeout/cancellation to cleanup. Then use structured `async let` or a task group for independent AeroSpace queries.
-- **Questions to define:**
-  - Should termination escalate if the process ignores `terminate()`?
-  - Which stderr patterns genuinely identify `serverNotRunning`?
-  - Should command output and errors have explicit size limits?
-- **Resolution notes:** _Pending._
+- **Original evidence:** `AeroSpaceClient.run` drained stdout concurrently but read stderr only after process completion. A subprocess producing enough stderr could fill its pipe, block before closing stdout, and be misreported as a timeout. On timeout, the code called `terminate()` and threw without waiting for exit or explicitly completing both pipe drains. Snapshot queries used independent `Task.detached` operations, so they did not inherit structured cancellation or task priority.
+- **Original impact:** Possible pipe deadlock, incomplete process cleanup, and work continuing after the requesting task was cancelled.
+- **Decision:** Use a reusable asynchronous runner that concurrently drains stdout and stderr and does not return until the subprocess has exited and both drains finish. Timeout, cancellation, or excessive output sends `SIGTERM`, escalates to `SIGKILL` after a 300 ms grace period, and still awaits cleanup. Limit captured stdout to 4 MiB and stderr to 256 KiB. Classify `serverNotRunning` only from the verified full diagnostic `Can't connect to AeroSpace server. Is AeroSpace.app running?`; preserve other server-related failures as `commandFailed`.
+- **Resolution notes:** `AsyncProcessRunner` now owns process launch, bounded dual-pipe reads, termination, escalation, and continuation completion. `AeroSpaceClient` maps runner failures into its domain errors, exposes an explicit oversized-output error, and performs independent queries with structured `async let`. Workspace and focus actions are async and no longer require a detached blocking task.
+- **Verification:** `make test` passes 60 tests in 15 suites. Focused coverage exercises output larger than pipe capacity on both streams, nonzero exit diagnostics, timeout escalation for a process that ignores `SIGTERM`, cancellation cleanup, independent stdout/stderr limits, and precise server-unavailable classification.
 
 ### R-03 — Clarify or strengthen capture timeouts
 
@@ -223,7 +220,7 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 
 ## Suggested order of investigation
 
-1. R-02 and R-03: continue establishing reliable resource and cancellation behavior after resolving R-01.
+1. R-03: continue establishing reliable resource and cancellation behavior after resolving R-01 and R-02.
 2. R-12: add test seams alongside those infrastructure changes.
 3. R-04: simplify lifecycle ownership using what was learned from the tests.
 4. R-05 and R-08: address UI scalability and action semantics.
@@ -238,3 +235,4 @@ Add dated entries here when findings change status.
 |---|---|---|---|
 | 2026-08-14 | All | Initial review recorded | Static inspection; no source or generated files changed during review |
 | 2026-08-14 | R-01 | Resolved with per-window keyed latest-frame delivery and replacement-aware diagnostics | `make test` — 53 tests in 13 suites passed |
+| 2026-08-14 | R-02 | Resolved with a bounded asynchronous subprocess runner, structured queries, cancellation cleanup, and termination escalation | `make test` — 60 tests in 15 suites passed |

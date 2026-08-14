@@ -30,11 +30,12 @@ struct AeroSpaceSnapshot: Codable, Equatable, Sendable {
     }
 }
 
-enum AeroSpaceError: Error, CustomStringConvertible {
+enum AeroSpaceError: Error, CustomStringConvertible, Sendable {
     case cliNotFound(searched: [String])
     case serverNotRunning
     case commandFailed(command: String, exitCode: Int32, stderr: String)
     case timeout(command: String)
+    case outputTooLarge(command: String, stream: String, limit: Int)
     case parseFailure(line: String)
 
     var description: String {
@@ -47,6 +48,8 @@ enum AeroSpaceError: Error, CustomStringConvertible {
             "`\(command)` failed (exit \(exitCode)): \(stderr)"
         case .timeout(let command):
             "`\(command)` timed out"
+        case .outputTooLarge(let command, let stream, let limit):
+            "`\(command)` produced more than \(limit) bytes on \(stream)"
         case .parseFailure(let line):
             "could not parse aerospace output line: \(line)"
         }
