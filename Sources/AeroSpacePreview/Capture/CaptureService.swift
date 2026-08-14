@@ -32,10 +32,11 @@ struct CaptureService: Sendable {
     /// ScreenCaptureKit's documented minimum queue depth.
     static let liveStreamQueueDepth = 3
 
-    /// Generous: the overlay never blocks on a capture (placeholders fill in),
-    /// so the timeout only decides when to give up on a stuck window. M6
-    /// measurement: 250 ms was tight enough that the back of a 9-window queue
-    /// timed out spuriously.
+    /// Best-effort deadline: `SCScreenshotManager.captureImage` has no supported
+    /// cancellation control, so a timed-out structured child may still delay task
+    /// completion while ScreenCaptureKit winds down. Overlay presentation does not
+    /// wait for captures; placeholders fill in. M6 measurement found 250 ms tight
+    /// enough for the back of a 9-window queue to time out spuriously.
     var perWindowTimeout: Duration = .milliseconds(600)
     /// SCK serializes much of the capture work internally; with many windows
     /// in flight at once, every capture's wall clock inflates (the timeout

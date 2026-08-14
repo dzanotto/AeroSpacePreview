@@ -33,7 +33,7 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 |---|---|---|---|
 | R-01 | P1 | Resolved | Bound the live-frame stream |
 | R-02 | P1 | Resolved | Replace the synchronous subprocess runner |
-| R-03 | P1 | Open | Clarify or strengthen capture timeouts |
+| R-03 | P1 | Resolved | Clarify or strengthen capture timeouts |
 | R-04 | P2 | Open | Split capture and overlay lifecycle responsibilities |
 | R-05 | P2 | Open | Handle large workspace counts |
 | R-06 | P2 | Open | Simplify debug-command startup |
@@ -71,16 +71,14 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 ### R-03 — Clarify or strengthen capture timeouts
 
 - **Priority:** P1
-- **Status:** Open
+- **Status:** Resolved
 - **Area:** Capture / cancellation
-- **Evidence:** `withTimeout` races an operation against `Task.sleep`, cancels the losing child, and returns from the task-group closure. Structured task groups still wait for their children to complete, so the 600 ms limit is strict only if the underlying ScreenCaptureKit operation promptly cooperates with cancellation.
-- **Impact:** A stuck or cancellation-resistant capture can exceed the documented timeout and delay stream completion.
-- **Candidate direction:** Either document the timeout as best-effort or use a capture primitive with explicit stop/cancellation semantics. Add a deterministic test with a cancellation-resistant operation.
-- **Questions to define:**
-  - Does `SCScreenshotManager.captureImage` reliably honor cancellation on supported macOS releases?
-  - Is returning a placeholder on time while cleanup continues acceptable?
-  - What resources must remain retained until a late capture finishes?
-- **Resolution notes:** _Pending._
+- **Original evidence:** `withTimeout` races an operation against `Task.sleep` and cancels the losing child. Structured task groups still wait for their children to complete, so the 600 ms limit is strict only if the underlying ScreenCaptureKit operation promptly cooperates with cancellation.
+- **Original impact:** A stuck or cancellation-resistant capture can exceed the documented timeout and delay stream completion.
+- **Findings:** [`SCScreenshotManager.captureImage`](https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager/captureimage%28contentfilter%3Aconfiguration%3Acompletionhandler%3A%29) is exposed as an Objective-C completion-handler API, available since macOS 14.0, with no cancellation token, returned operation handle, or stop method. Its Swift `async throws` overload is compiler-imported by suspending on a continuation, as described by [SE-0297](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0297-concurrency-objc.md); that translation does not add a cancellation handler. Swift task cancellation is cooperative, and a task group cannot leave its scope until cancelled children complete, as specified by [SE-0304](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0304-structured-concurrency.md). Apple publishes no promise that cancelling the awaiting Swift task aborts or promptly completes an in-progress screenshot. Normal quick completion after cancellation must not be interpreted as cancellation support.
+- **Decision:** Treat the 600 ms limit as a best-effort timeout, not a hard deadline. Preserve structured task ownership so the capture task and any objects it retains remain alive until ScreenCaptureKit calls the completion handler. Do not detach late captures merely to return a placeholder at exactly 600 ms; the overlay can already present placeholders without waiting for captures. If a future requirement needs a strict return deadline or prompt physical capture shutdown, use a separately owned late-completion lifecycle or a primitive such as `SCStream` with explicit `stopCapture()` semantics.
+- **Resolution notes:** The timeout contract is now documented next to `perWindowTimeout`. Across all supported macOS versions, code must assume `SCScreenshotManager.captureImage` is non-cancellable because the public API provides no supported cancellation mechanism. A synthetic cancellation-resistant test would only reconfirm Swift task-group semantics and cannot establish undocumented ScreenCaptureKit behavior across OS releases, so no such unit test is required for this documentation-only resolution.
+- **Verification:** Static inspection of the macOS SDK declaration, Apple API documentation, SE-0297, SE-0304, and the local timeout/capture lifecycle. No runtime behavior changed.
 
 ### R-04 — Split capture and overlay lifecycle responsibilities
 
@@ -220,12 +218,11 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 
 ## Suggested order of investigation
 
-1. R-03: continue establishing reliable resource and cancellation behavior after resolving R-01 and R-02.
-2. R-12: add test seams alongside those infrastructure changes.
-3. R-04: simplify lifecycle ownership using what was learned from the tests.
-4. R-05 and R-08: address UI scalability and action semantics.
-5. R-06, R-07, R-09, and R-10: perform localized simplifications.
-6. R-11: update documentation after implementation decisions settle.
+1. R-12: add test seams around the remaining infrastructure boundaries.
+2. R-04: simplify lifecycle ownership using what was learned from the tests.
+3. R-05 and R-08: address UI scalability and action semantics.
+4. R-06, R-07, R-09, and R-10: perform localized simplifications.
+5. R-11: update documentation after implementation decisions settle.
 
 ## Resolution log
 
@@ -236,3 +233,4 @@ Add dated entries here when findings change status.
 | 2026-08-14 | All | Initial review recorded | Static inspection; no source or generated files changed during review |
 | 2026-08-14 | R-01 | Resolved with per-window keyed latest-frame delivery and replacement-aware diagnostics | `make test` — 53 tests in 13 suites passed |
 | 2026-08-14 | R-02 | Resolved with a bounded asynchronous subprocess runner, structured queries, cancellation cleanup, and termination escalation | `make test` — 60 tests in 15 suites passed |
+| 2026-08-14 | R-03 | Resolved by documenting `SCScreenshotManager.captureImage` as non-cancellable and the 600 ms limit as best-effort while retaining structured cleanup | SDK and API-contract inspection; source documentation updated; no runtime behavior changed |
