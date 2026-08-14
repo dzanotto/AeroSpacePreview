@@ -17,6 +17,28 @@ import Testing
         #expect(!CaptureService.shouldPublish(frameStatus: .stopped))
     }
 
+    @Test func identifiesTheWallpaperWindowForItsDisplay() {
+        let display = CGRect(x: 0, y: 0, width: 2560, height: 1440)
+        #expect(CaptureService.isWallpaperWindow(
+            bundleIdentifier: "com.apple.dock",
+            title: "Wallpaper-",
+            frame: display,
+            displayFrame: display
+        ))
+        #expect(!CaptureService.isWallpaperWindow(
+            bundleIdentifier: "com.apple.finder",
+            title: "Wallpaper-",
+            frame: display,
+            displayFrame: display
+        ))
+        #expect(!CaptureService.isWallpaperWindow(
+            bundleIdentifier: "com.apple.dock",
+            title: "Wallpaper-",
+            frame: display.offsetBy(dx: 2560, dy: 0),
+            displayFrame: display
+        ))
+    }
+
     @Test @MainActor func keepsStablePerWindowSlotsAndLastGoodImage() {
         let firstID: CGWindowID = 101
         let secondID: CGWindowID = 202

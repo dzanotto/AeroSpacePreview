@@ -18,8 +18,9 @@ so Mission Control shows nothing useful. This app fills that gap.
 
 ### Overlay
 - Full-screen borderless window on the focused monitor, above all other windows
-  (`NSWindow.Level` ≥ `.popUpMenu`), with a dimmed/blurred backdrop
-  (`NSVisualEffectView` behind the content).
+  (`NSWindow.Level` ≥ `.popUpMenu`), with the monitor's current desktop wallpaper
+  captured as a dimmed/blurred backdrop. If wallpaper capture is unavailable, an
+  `NSVisualEffectView` behind the content provides the fallback backdrop.
 - Shows a grid of **workspace tiles**, one per workspace.
 - Workspaces shown: **occupied workspaces + the currently focused workspace** (even if empty),
   sorted by workspace name (AeroSpace's natural sort order).
@@ -116,9 +117,10 @@ Layers and dependencies (one direction only): `UI → ViewModel → {AeroSpaceCl
   (`switchTo(workspace)`, `focus(windowID)`, `dismiss`) back to the controller.
 
 ### Permissions
-- **Screen Recording** (TCC): required for thumbnails. First run triggers the system prompt;
-  if denied, the overlay still works fully with placeholder cards and shows a one-line hint
-  with a button opening System Settings → Privacy → Screen Recording.
+- **Screen Recording** (TCC): required for thumbnails and the rendered-wallpaper backdrop.
+  First run triggers the system prompt; if denied, the overlay still works fully with
+  placeholder cards and the visual-effect backdrop, and shows a one-line hint with a button
+  opening System Settings → Privacy → Screen Recording.
 - No Accessibility permission needed (Carbon hotkey + CLI do not require it).
 
 ## 4. Non-goals (v1)

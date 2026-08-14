@@ -31,9 +31,10 @@ toggle the session-only **Show Diagnostics** HUD, show an about box, and quit.
 
 ## Permissions
 
-- **Screen Recording** — required for window thumbnails. The first launch triggers the
-  system prompt (the app warms up ScreenCaptureKit at startup). If denied, the overlay
-  still works fully with app-icon placeholder cards and shows a hint with a button to
+- **Screen Recording** — required for window thumbnails and the rendered-wallpaper
+  backdrop. The first launch triggers the system prompt (the app warms up ScreenCaptureKit
+  at startup). If denied, the overlay still works fully with app-icon placeholder cards
+  and the visual-effect fallback, and shows a hint with a button to
   System Settings → Privacy & Security → Screen Recording. The bundle ID and signature
   are stable across rebuilds, so the grant persists.
 - **No Accessibility permission** is needed: the hotkey uses the Carbon
@@ -60,10 +61,12 @@ The combination is a single constant in `AppDelegate.swift` if you need to chang
 | menu-bar **Show Diagnostics** | show/hide the diagnostics HUD for this app session |
 
 Workspaces shown: occupied ones plus the focused one (even if empty), in AeroSpace's
-natural sort order. An initial one-shot pass lets thumbnails pop in progressively
-(~30 ms per window, serialized inside ScreenCaptureKit). It then transitions to
-change-aware streams at up to 30 fps: animated windows update in real time while static
-windows keep their still image.
+natural sort order. The backdrop is a fresh still of the monitor's currently rendered
+wallpaper, lightly blurred and dimmed; the previous still is cached between summons to
+avoid flashing the windows behind the overlay. An initial one-shot pass lets thumbnails
+pop in progressively (~30 ms per window, serialized inside ScreenCaptureKit). It then
+transitions to change-aware streams at up to 30 fps: animated windows update in real time
+while static windows keep their still image.
 
 ### Layout previews
 

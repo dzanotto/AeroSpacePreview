@@ -10,6 +10,9 @@ import SwiftUI
 final class OverlayViewModel: ObservableObject {
     @Published private(set) var selectedWorkspace: String?
     @Published private(set) var typedPrefix = ""
+    /// A still of the currently rendered desktop wallpaper. The controller
+    /// seeds this from its cache and replaces it with a fresh per-summon frame.
+    @Published private(set) var desktopBackground: CGImage?
     /// Stable per-window slots let live frames redraw only the affected
     /// thumbnail instead of invalidating the complete workspace grid.
     let thumbnails: ThumbnailStore
@@ -29,9 +32,14 @@ final class OverlayViewModel: ObservableObject {
     private let columns: Int
     private var typedResetTask: Task<Void, Never>?
 
-    init(content: OverlayContent, actions: OverlayActions) {
+    init(
+        content: OverlayContent,
+        actions: OverlayActions,
+        desktopBackground: CGImage? = nil
+    ) {
         self.content = content
         self.actions = actions
+        self.desktopBackground = desktopBackground
         if case .snapshot(let snapshot) = content {
             thumbnails = ThumbnailStore(windowIDs: snapshot.allWindowIDs)
             workspaceNames = snapshot.workspaces.map(\.name)
@@ -49,6 +57,10 @@ final class OverlayViewModel: ObservableObject {
 
     func publishDiagnostics(_ snapshot: DiagnosticsSnapshot?) {
         diagnosticsSnapshot = snapshot
+    }
+
+    func publishDesktopBackground(_ image: CGImage) {
+        desktopBackground = image
     }
 
     /// Returns true if the event was consumed.

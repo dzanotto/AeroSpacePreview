@@ -14,6 +14,9 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private let frameCache = FrameCacheStore()
     private let diagnostics = CaptureDiagnostics()
     private let resourceSampler = ProcessResourceSampler()
+    /// Last rendered wallpaper frame per display, retained to avoid showing
+    /// the windows behind the panel while a new per-summon capture arrives.
+    private var desktopBackgrounds: [CGDirectDisplayID: CGImage] = [:]
     private var diagnosticsEnabled: Bool
     private var diagnosticsTask: Task<Void, Never>?
     private weak var currentViewModel: OverlayViewModel?
@@ -50,6 +53,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     func show() {
         guard !isVisible, !isLoading else { return }
+        guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else { return }
+        let targetDisplayID = Self.displayID(for: targetScreen)
         isLoading = true
         captureTask?.cancel()
         if client == nil { client = try? AeroSpaceClient.discover() }
@@ -68,14 +73,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
             if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
                 let windowIDs = snapshot.allWindowIDs
                 windowCount = windowIDs.count
-                stream = capture.captureStream(for: windowIDs, maxPixel: 320)
+                stream = capture.captureStream(
+                    for: windowIDs,
+                    maxPixel: 320,
+                    desktopDisplayID: targetDisplayID
+                )
             }
             self.diagnostics.prepareSummon(
                 windowIDs: stream == nil ? [] : content.windowIDsForDiagnostics
             )
             let stateDone = clock.now
 
-            let viewModel = self.present(content)
+            let viewModel = self.present(content, displayID: targetDisplayID)
             self.isLoading = false
             if let viewModel, self.diagnosticsEnabled {
                 self.startDiagnosticsSession(viewModel: viewModel)
@@ -99,6 +108,11 @@ final class OverlayController: NSObject, NSWindowDelegate {
                     if let layout = self.frameCache.layout(for: focused) {
                         viewModel.layouts[focused.name] = layout
                     }
+                case .desktopBackground(let image):
+                    if let targetDisplayID {
+                        self.desktopBackgrounds[targetDisplayID] = image
+                    }
+                    viewModel.publishDesktopBackground(image)
                 case .thumbnail(let id, let image):
                     viewModel.thumbnails.update(image, for: id)
                     captured += 1
@@ -171,8 +185,14 @@ final class OverlayController: NSObject, NSWindowDelegate {
     // MARK: - Presentation
 
     @discardableResult
-    private func present(_ content: OverlayContent) -> OverlayViewModel? {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return nil }
+    private func present(
+        _ content: OverlayContent,
+        displayID: CGDirectDisplayID?
+    ) -> OverlayViewModel? {
+        let screen = displayID.flatMap { wanted in
+            NSScreen.screens.first(where: { Self.displayID(for: $0) == wanted })
+        } ?? NSScreen.main ?? NSScreen.screens.first
+        guard let screen else { return nil }
 
         let actions = OverlayActions(
             dismiss: { [weak self] in self?.hide() },
@@ -180,7 +200,11 @@ final class OverlayController: NSObject, NSWindowDelegate {
             focusWindow: { [weak self] id in self?.perform { try $0.focusWindow(id: id) } }
         )
 
-        let viewModel = OverlayViewModel(content: content, actions: actions)
+        let viewModel = OverlayViewModel(
+            content: content,
+            actions: actions,
+            desktopBackground: displayID.flatMap { desktopBackgrounds[$0] }
+        )
         currentViewModel = viewModel
         if case .snapshot(let snapshot) = content {
             for workspace in snapshot.workspaces {
@@ -201,6 +225,10 @@ final class OverlayController: NSObject, NSWindowDelegate {
             panel.animator().alphaValue = 1
         }
         return viewModel
+    }
+
+    private static func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     // MARK: - Diagnostics

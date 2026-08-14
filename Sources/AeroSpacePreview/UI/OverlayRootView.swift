@@ -8,6 +8,7 @@ struct OverlayRootView: View {
     var body: some View {
         ZStack {
             VisualEffectBackdrop()
+            desktopBackground
             Color.black.opacity(0.35)
                 .contentShape(Rectangle())
                 .onTapGesture { actions.dismiss() }
@@ -26,12 +27,28 @@ struct OverlayRootView: View {
                 errorCard(message)
             }
         }
+        .animation(.easeOut(duration: 0.12), value: viewModel.desktopBackground == nil)
         .ignoresSafeArea()
         .overlay(alignment: .topTrailing) {
             if let snapshot = viewModel.diagnosticsSnapshot {
                 DiagnosticsHUDView(snapshot: snapshot)
                     .padding(20)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var desktopBackground: some View {
+        if let image = viewModel.desktopBackground {
+            Image(decorative: image, scale: 1)
+                .resizable()
+                .scaledToFill()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .scaleEffect(1.02)
+                .blur(radius: 10)
+                .clipped()
+                .allowsHitTesting(false)
+                .transition(.opacity)
         }
     }
 

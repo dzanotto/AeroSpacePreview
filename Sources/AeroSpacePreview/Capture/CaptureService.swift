@@ -17,6 +17,7 @@ enum CaptureEvent: Sendable {
     /// in shareable content, delivered before any pixels so layout rendering
     /// never waits on captures.
     case frames(WindowFrameHarvest)
+    case desktopBackground(CGImage)
     case thumbnail(CGWindowID, CGImage)
 }
 
@@ -48,10 +49,16 @@ struct CaptureService: Sendable {
     /// yielding each thumbnail as soon as its capture completes (captures
     /// begin eagerly, before the stream is consumed). The first event carries
     /// the windows' frames — piggybacked on the SCShareableContent lookup the
-    /// captures need anyway. Windows that are missing from shareable content,
-    /// time out, or fail are simply never yielded — callers render
-    /// placeholders for them.
-    func captureStream(for windowIDs: [CGWindowID], maxPixel: Int) -> AsyncStream<CaptureEvent> {
+    /// captures need anyway. When a display is supplied, a desktop-background
+    /// still is captured in the same bounded task group and yielded as soon as
+    /// it arrives. Windows that are missing from shareable content, time out,
+    /// or fail are simply never yielded — callers render placeholders.
+    func captureStream(
+        for windowIDs: [CGWindowID],
+        maxPixel: Int,
+        desktopDisplayID: CGDirectDisplayID? = nil,
+        desktopMaxPixel: Int = 2560
+    ) -> AsyncStream<CaptureEvent> {
         let timeout = perWindowTimeout
         let maxConcurrent = maxConcurrentCaptures
         return AsyncStream { continuation in
@@ -70,25 +77,46 @@ struct CaptureService: Sendable {
                     displays: content.displays.map(\.frame)
                 )))
 
-                await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
-                    let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> (CGWindowID, CGImage?) in
+                await withTaskGroup(of: OneShotCaptureResult.self) { group in
+                    if let desktopDisplayID {
+                        let boxedContent = UncheckedSendable(content)
+                        group.addTask {
+                            let image = try? await withTimeout(timeout) {
+                                await Self.captureDesktopBackground(
+                                    from: boxedContent.value,
+                                    displayID: desktopDisplayID,
+                                    maxPixel: desktopMaxPixel
+                                )
+                            }
+                            return .desktopBackground(image)
+                        }
+                    }
+
+                    let capture = { @Sendable (id: CGWindowID, boxed: UncheckedSendable<SCWindow>) async -> OneShotCaptureResult in
                         let image = try? await withTimeout(timeout) {
                             try await Self.capture(boxed.value, maxPixel: maxPixel)
                         }
-                        return (id, image)
+                        return .thumbnail(id, image)
                     }
 
+                    let availableSlots = max(1, maxConcurrent)
+                        - (desktopDisplayID == nil ? 0 : 1)
                     var next = 0
-                    while next < min(maxConcurrent, targets.count) {
+                    while next < min(max(0, availableSlots), targets.count) {
                         let (id, boxed) = targets[next]
                         group.addTask { await capture(id, boxed) }
                         next += 1
                     }
-                    for await (id, image) in group {
-                        if let image { continuation.yield(.thumbnail(id, image)) }
+                    for await result in group {
+                        switch result {
+                        case .desktopBackground(let image):
+                            if let image { continuation.yield(.desktopBackground(image)) }
+                        case .thumbnail(let id, let image):
+                            if let image { continuation.yield(.thumbnail(id, image)) }
+                        }
                         if next < targets.count {
-                            let (id, boxed) = targets[next]
-                            group.addTask { await capture(id, boxed) }
+                            let (nextID, boxed) = targets[next]
+                            group.addTask { await capture(nextID, boxed) }
                             next += 1
                         }
                     }
@@ -250,6 +278,72 @@ struct CaptureService: Sendable {
             .excludingDesktopWindows(true, onScreenWindowsOnly: true),
             let window = content.windows.first else { return }
         _ = try? await Self.capture(window, maxPixel: 8)
+    }
+
+    /// Wallpaper is exposed as a full-display Dock window on current macOS.
+    /// Selecting it directly avoids reproducing the menu bar, Dock, or Finder
+    /// desktop icons. The display-filter path below is the supported fallback
+    /// if that window-server convention changes.
+    static func isWallpaperWindow(
+        bundleIdentifier: String?,
+        title: String?,
+        frame: CGRect,
+        displayFrame: CGRect
+    ) -> Bool {
+        guard bundleIdentifier == "com.apple.dock",
+              title?.hasPrefix("Wallpaper") == true else { return false }
+        let tolerance: CGFloat = 1
+        return abs(frame.minX - displayFrame.minX) <= tolerance
+            && abs(frame.minY - displayFrame.minY) <= tolerance
+            && abs(frame.width - displayFrame.width) <= tolerance
+            && abs(frame.height - displayFrame.height) <= tolerance
+    }
+
+    private static func captureDesktopBackground(
+        from content: SCShareableContent,
+        displayID: CGDirectDisplayID,
+        maxPixel: Int
+    ) async -> CGImage? {
+        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+            return nil
+        }
+        if let wallpaper = content.windows.first(where: {
+            isWallpaperWindow(
+                bundleIdentifier: $0.owningApplication?.bundleIdentifier,
+                title: $0.title,
+                frame: $0.frame,
+                displayFrame: display.frame
+            )
+        }) {
+            return try? await capture(wallpaper, maxPixel: maxPixel)
+        }
+
+        // A display-excluding filter always retains the rendered desktop.
+        // Asking for content without desktop windows means the exclusion list
+        // removes applications (including our panel), but not the wallpaper.
+        guard let visibleContent = try? await SCShareableContent
+            .excludingDesktopWindows(true, onScreenWindowsOnly: true),
+              let visibleDisplay = visibleContent.displays.first(where: { $0.displayID == displayID })
+        else { return nil }
+
+        let filter = SCContentFilter(
+            display: visibleDisplay,
+            excludingWindows: visibleContent.windows
+        )
+        if #available(macOS 14.2, *) {
+            filter.includeMenuBar = false
+        }
+        let config = SCStreamConfiguration()
+        let width = CGFloat(visibleDisplay.width)
+        let height = CGFloat(visibleDisplay.height)
+        let scale = min(1.0, CGFloat(maxPixel) / max(width, height, 1))
+        config.width = max(1, Int(width * scale))
+        config.height = max(1, Int(height * scale))
+        config.showsCursor = false
+        return try? await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: config
+        )
     }
 
     private static func capture(_ window: SCWindow, maxPixel: Int) async throws -> CGImage {
@@ -482,6 +576,11 @@ private final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate
         return (attachments[.displayTime] as? NSNumber)?.uint64Value
     }
 
+}
+
+private enum OneShotCaptureResult: Sendable {
+    case desktopBackground(CGImage?)
+    case thumbnail(CGWindowID, CGImage?)
 }
 
 private struct PendingLiveFrame: @unchecked Sendable {
