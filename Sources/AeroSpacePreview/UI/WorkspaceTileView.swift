@@ -49,9 +49,7 @@ struct WorkspaceTileView: View {
     @ViewBuilder
     private var windowArea: some View {
         if workspace.windows.isEmpty {
-            Text("empty")
-                .font(.system(size: 13))
-                .foregroundStyle(.white.opacity(0.35))
+            Color.clear
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let layout {
             WorkspaceLayoutView(

@@ -3,8 +3,10 @@ import Carbon.HIToolbox
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let overlay = OverlayController(
-        diagnosticsEnabled: CommandLine.arguments.contains("--debug-hud")
+    private let preferences = AppPreferences()
+    private lazy var overlay = OverlayController(
+        diagnosticsEnabled: CommandLine.arguments.contains("--debug-hud"),
+        showEmptyWorkspaces: preferences.showEmptyWorkspaces
     )
     private var hotKey: HotKeyManager?
     private var statusItem: StatusItemController?
@@ -12,6 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = StatusItemController(
             onToggleOverlay: { [weak self] in self?.overlay.toggle() },
+            isShowingEmptyWorkspaces: { [weak self] in
+                self?.overlay.isShowingEmptyWorkspaces ?? false
+            },
+            onToggleShowEmptyWorkspaces: { [weak self] in
+                guard let self else { return }
+                self.overlay.toggleShowEmptyWorkspaces()
+                self.preferences.showEmptyWorkspaces = self.overlay.isShowingEmptyWorkspaces
+            },
             isDiagnosticsEnabled: { [weak self] in self?.overlay.isDiagnosticsEnabled ?? false },
             onToggleDiagnostics: { [weak self] in self?.overlay.toggleDiagnostics() }
         )

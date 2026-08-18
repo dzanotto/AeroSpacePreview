@@ -30,10 +30,10 @@ struct AeroSpaceClient: Sendable {
 
     // MARK: - Queries
 
-    func fetchSnapshot() async throws -> AeroSpaceSnapshot {
-        // Each CLI invocation has measurable process overhead; the three
-        // queries are independent, so run them concurrently and make the
-        // snapshot cost one round-trip instead of three.
+    func fetchSnapshot(includeEmptyWorkspaces: Bool = false) async throws -> AeroSpaceSnapshot {
+        // Each CLI invocation has measurable process overhead; the queries
+        // are independent, so run them concurrently and make the snapshot
+        // cost one round-trip.
         async let windowsOutput = run([
             "list-windows", "--all", "--format", AeroSpaceParser.windowFormat,
         ])
@@ -44,19 +44,36 @@ struct AeroSpaceClient: Sendable {
         async let focusedWindowOutput = try? run([
             "list-windows", "--focused", "--format", "%{window-id}",
         ])
+        async let allWorkspacesOutput = fetchAllWorkspaceNames(if: includeEmptyWorkspaces)
 
-        let outputs = try await (windowsOutput, focusedWorkspaceOutput, focusedWindowOutput)
+        let outputs = try await (
+            windowsOutput,
+            focusedWorkspaceOutput,
+            focusedWindowOutput,
+            allWorkspacesOutput
+        )
         let windowRows = try AeroSpaceParser.parseWindowRows(outputs.0)
         let focusedWorkspace = outputs.1
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let focusedWindowID = outputs.2
             .flatMap { CGWindowID($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let workspaceNames = outputs.3?
+            .split(whereSeparator: { $0.isNewline })
+            .map(String.init) ?? []
 
         return AeroSpaceParser.buildSnapshot(
             windowRows: windowRows,
             focusedWorkspace: focusedWorkspace,
-            focusedWindowID: focusedWindowID
+            focusedWindowID: focusedWindowID,
+            workspaceNames: workspaceNames
         )
+    }
+
+    private func fetchAllWorkspaceNames(if included: Bool) async throws -> String? {
+        guard included else { return nil }
+        return try await run([
+            "list-workspaces", "--all", "--format", "%{workspace}",
+        ])
     }
 
     /// The focused workspace and its window IDs — the minimal query for a

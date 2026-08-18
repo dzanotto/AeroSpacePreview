@@ -5,7 +5,9 @@ import Testing
     @Test func capsAtFour() {
         #expect(OverlayKeyLogic.columns(for: 1) == 1)
         #expect(OverlayKeyLogic.columns(for: 3) == 3)
-        #expect(OverlayKeyLogic.columns(for: 9) == 4)
+        #expect(OverlayKeyLogic.columns(for: 4) == 4)
+        #expect(OverlayKeyLogic.columns(for: 5) == 4)
+        #expect(OverlayKeyLogic.columns(for: 12) == 4)
         #expect(OverlayKeyLogic.columns(for: 0) == 1)
     }
 }
@@ -29,6 +31,12 @@ import Testing
         for arrow in [OverlayKeyLogic.Arrow.left, .right, .up, .down] {
             #expect(OverlayKeyLogic.move(index: 0, count: 1, columns: 1, arrow: arrow) == 0)
         }
+    }
+
+    @Test func fourColumnGridMovesToAndFromTheSecondRow() {
+        #expect(OverlayKeyLogic.move(index: 0, count: 5, columns: 4, arrow: .down) == 4)
+        #expect(OverlayKeyLogic.move(index: 1, count: 5, columns: 4, arrow: .down) == 1)
+        #expect(OverlayKeyLogic.move(index: 4, count: 5, columns: 4, arrow: .up) == 0)
     }
 }
 

@@ -73,9 +73,12 @@ continues running without a global hotkey. The menu-bar command can still open t
 | Enter | Switch to the selected workspace |
 | Esc or click the backdrop | Dismiss without an action |
 
-The overlay includes every occupied workspace plus the focused workspace when it is empty.
-Workspaces use AeroSpace's natural name order. Initial window images appear progressively, then
-changed window content continues updating at up to 30 fps while static thumbnails remain still.
+By default, the overlay includes every occupied workspace plus the focused workspace when it is
+empty. Enable Show Empty Workspaces from the menu-bar item to include every AeroSpace workspace;
+the choice persists across launches. Workspaces use AeroSpace's natural name order. Workspace
+tiles fill up to four columns before continuing on another row. Initial window images appear
+progressively, then changed window content continues updating at up to 30 fps while static
+thumbnails remain still.
 
 When AeroSpacePreview has observed a workspace while it was visible, its tile mirrors the real
 tiled layout. A uniform thumbnail grid is used after launch for unseen workspaces and whenever a
@@ -90,6 +93,7 @@ background arrives.
 The menu-bar item provides:
 
 - Show Workspace Preview.
+- Show Empty Workspaces, disabled by default and persisted across launches.
 - Show Diagnostics, retained for the current app session.
 - Launch at Login.
 - About AeroSpacePreview.

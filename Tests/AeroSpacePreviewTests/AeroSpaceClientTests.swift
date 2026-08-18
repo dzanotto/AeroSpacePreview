@@ -79,6 +79,30 @@ import Testing
         #expect(snapshot.allWindows.allSatisfy { !$0.isFocused })
     }
 
+    @Test func fetchSnapshotQueriesAndIncludesEmptyWorkspacesWhenRequested() async throws {
+        let cli = try FakeAeroSpaceCLI(body: """
+        if [ "$1" = "list-windows" ] && [ "$2" = "--all" ]; then
+            printf '10\tcom.editor\tEditor\tdev\tMain\n'
+        elif [ "$1" = "list-workspaces" ] && [ "$2" = "--focused" ]; then
+            printf 'dev\n'
+        elif [ "$1" = "list-workspaces" ] && [ "$2" = "--all" ]; then
+            printf 'dev\nscratch\n'
+        elif [ "$1" = "list-windows" ] && [ "$2" = "--focused" ]; then
+            printf '10\n'
+        else
+            exit 64
+        fi
+        """)
+
+        let snapshot = try await makeClient(for: cli).fetchSnapshot(includeEmptyWorkspaces: true)
+
+        #expect(snapshot.workspaces.map(\.name) == ["dev", "scratch"])
+        #expect(snapshot.workspaces[1].windows.isEmpty)
+        #expect(Set(try cli.commands()).contains(
+            "list-workspaces|--all|--format|%{workspace}|"
+        ))
+    }
+
     @Test func focusedWorkspaceQueryAndActionsPreserveTheCommandProtocol() async throws {
         let cli = try FakeAeroSpaceCLI(body: """
         if [ "$1" = "list-workspaces" ]; then

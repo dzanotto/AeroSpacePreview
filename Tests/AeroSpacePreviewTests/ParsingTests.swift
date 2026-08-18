@@ -74,6 +74,18 @@ import CoreGraphics
         #expect(snapshot.focusedWorkspace?.windows.isEmpty == true)
     }
 
+    @Test func requestedEmptyWorkspacesAreIncludedAndNaturallySorted() {
+        let snapshot = AeroSpaceParser.buildSnapshot(
+            windowRows: [row(1, "10")],
+            focusedWorkspace: "10",
+            focusedWindowID: 1,
+            workspaceNames: ["scratch", "2", "10"]
+        )
+        #expect(snapshot.workspaces.map(\.name) == ["2", "10", "scratch"])
+        #expect(snapshot.workspaces.first?.windows.isEmpty == true)
+        #expect(snapshot.workspaces[1].windows.map(\.id) == [1])
+    }
+
     @Test func noFocusedWindowIsLegal() {
         let snapshot = AeroSpaceParser.buildSnapshot(
             windowRows: [row(1, "1")],

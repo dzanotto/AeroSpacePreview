@@ -16,8 +16,9 @@ struct AeroSpaceWorkspace: Codable, Equatable, Sendable {
     let windows: [AeroSpaceWindow]
 }
 
-/// Immutable view of AeroSpace state at one point in time: occupied
-/// workspaces plus the focused one (even if empty), natural-sorted by name.
+/// Immutable view of the requested AeroSpace state at one point in time,
+/// natural-sorted by workspace name. Empty non-focused workspaces are present
+/// only when the corresponding snapshot option is enabled.
 struct AeroSpaceSnapshot: Codable, Equatable, Sendable {
     let workspaces: [AeroSpaceWorkspace]
 

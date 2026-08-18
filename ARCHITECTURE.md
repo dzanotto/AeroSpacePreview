@@ -86,15 +86,17 @@ but is cancelled when replaced or when the application exits.
 
 `AeroSpaceClient` searches `/opt/homebrew/bin/aerospace`, `/usr/local/bin/aerospace`, and then
 the process `PATH`. A snapshot is assembled from three independent CLI queries started with
-structured `async let`:
+structured `async let`, plus an optional fourth query when empty workspaces are enabled:
 
 - all windows, including each window's workspace;
 - the focused workspace;
-- the focused window, which may legitimately be absent.
+- the focused window, which may legitimately be absent;
+- all workspace names when the persisted Show Empty Workspaces preference is enabled.
 
-The parser groups windows by workspace, ensures the focused workspace is present even when
-empty, marks the focused window, and applies numeric-aware, case-insensitive ordering. Workspace
-and window actions use the same asynchronous subprocess path as queries.
+The parser groups windows by workspace, merges the optional complete workspace-name list, ensures
+the focused workspace is present even when empty, marks the focused window, and applies
+numeric-aware, case-insensitive ordering. Workspace and window actions use the same asynchronous
+subprocess path as queries.
 
 `AsyncProcessRunner` owns a child until the process has exited and both stdout and stderr have
 reached EOF. It drains both pipes concurrently, limits stdout to 4 MiB and stderr to 256 KiB,
@@ -172,8 +174,10 @@ do not survive the owning applications.
 ## UI behavior
 
 The grid uses up to four fixed columns so visual placement and keyboard navigation use the same
-geometry. Left and right wrap; up and down move by a row and clamp. Typing selects by a
-case-insensitive workspace-name prefix, and an exact unique name activates immediately.
+geometry. Tiles share the available display width up to a per-tile maximum, and additional
+workspaces continue on subsequent rows. Left and right wrap; up and down move by a row and clamp.
+Typing selects by a case-insensitive workspace-name prefix, and an exact unique name activates
+immediately.
 
 Workspace tiles and their nested window thumbnails emit different intents: the tile switches
 workspace, while a thumbnail focuses its window. The focused workspace/window treatment and the

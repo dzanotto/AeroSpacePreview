@@ -19,12 +19,15 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var desktopBackgrounds: [CGDirectDisplayID: CGImage] = [:]
     private var diagnosticsEnabled: Bool
     private weak var currentViewModel: OverlayViewModel?
+    private var showEmptyWorkspaces: Bool
 
     var isVisible: Bool { panel?.isVisible ?? false }
     var isDiagnosticsEnabled: Bool { diagnosticsEnabled }
+    var isShowingEmptyWorkspaces: Bool { showEmptyWorkspaces }
 
-    init(diagnosticsEnabled: Bool = false) {
+    init(diagnosticsEnabled: Bool = false, showEmptyWorkspaces: Bool = false) {
         self.diagnosticsEnabled = diagnosticsEnabled
+        self.showEmptyWorkspaces = showEmptyWorkspaces
     }
 
     func toggle() {
@@ -33,6 +36,10 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     func toggleDiagnostics() {
         setDiagnosticsEnabled(!diagnosticsEnabled)
+    }
+
+    func toggleShowEmptyWorkspaces() {
+        showEmptyWorkspaces.toggle()
     }
 
     func setDiagnosticsEnabled(_ enabled: Bool) {
@@ -54,6 +61,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else { return }
         guard let sessionID = lifetime.beginLoading() else { return }
         let targetDisplayID = Self.displayID(for: targetScreen)
+        let showEmptyWorkspaces = showEmptyWorkspaces
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
@@ -63,7 +71,10 @@ final class OverlayController: NSObject, NSWindowDelegate {
         let captureTask = Task { [client, oneShotCapture, liveThumbnails] in
             let clock = ContinuousClock()
             let start = clock.now
-            let content = await Self.loadState(client: client)
+            let content = await Self.loadState(
+                client: client,
+                showEmptyWorkspaces: showEmptyWorkspaces
+            )
             guard !Task.isCancelled,
                   self.lifetime.isCurrent(sessionID, phase: .loading)
             else { return }
@@ -164,12 +175,17 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     // MARK: - State assembly (off the main actor; CLI calls block briefly)
 
-    private nonisolated static func loadState(client: AeroSpaceClient?) async -> OverlayContent {
+    private nonisolated static func loadState(
+        client: AeroSpaceClient?,
+        showEmptyWorkspaces: Bool
+    ) async -> OverlayContent {
         guard let client else {
             return .error("aerospace CLI not found.\nIs AeroSpace installed? (brew install --cask nikitabobko/tap/aerospace)")
         }
         do {
-            let snapshot = try await client.fetchSnapshot()
+            let snapshot = try await client.fetchSnapshot(
+                includeEmptyWorkspaces: showEmptyWorkspaces
+            )
             return .snapshot(OverlaySnapshot(
                 workspaces: snapshot.workspaces,
                 permissionDenied: !ScreenRecordingPermission.isGranted

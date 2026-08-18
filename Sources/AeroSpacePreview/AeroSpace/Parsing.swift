@@ -37,13 +37,17 @@ enum AeroSpaceParser {
     static func buildSnapshot(
         windowRows: [WindowRow],
         focusedWorkspace: String,
-        focusedWindowID: CGWindowID?
+        focusedWindowID: CGWindowID?,
+        workspaceNames: [String] = []
     ) -> AeroSpaceSnapshot {
         var byWorkspace: [String: [AeroSpaceWindow]] = [:]
         for row in windowRows {
             var window = row.window
             window.isFocused = window.id == focusedWindowID
             byWorkspace[row.workspace, default: []].append(window)
+        }
+        for name in workspaceNames {
+            byWorkspace[name, default: []] += []
         }
         byWorkspace[focusedWorkspace, default: []] += [] // focused shows even if empty
 

@@ -70,7 +70,7 @@ struct OverlayRootView: View {
                 )
             }
         }
-        .frame(maxWidth: 1500)
+        .frame(maxWidth: .infinity)
     }
 
     @ViewBuilder
