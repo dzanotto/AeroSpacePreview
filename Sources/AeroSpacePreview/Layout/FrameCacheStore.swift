@@ -71,8 +71,8 @@ enum LayoutMath {
 }
 
 /// Workspace name → last-seen window layout. Frames are only trustworthy for
-/// the *visible* workspace (AeroSpace stacks hidden ones off-viewport, per
-/// M0), so entries are harvested at moments the workspace is known to be on
+/// the *visible* workspace because AeroSpace stacks hidden ones off-viewport,
+/// so entries are harvested at moments the workspace is known to be on
 /// screen: every summon, and shortly after the overlay switches workspace —
 /// normal use populates the cache by itself. In-memory for the app's
 /// lifetime; persistence would rarely pay off since window IDs die with

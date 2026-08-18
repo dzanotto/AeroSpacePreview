@@ -1,111 +1,130 @@
 # AeroSpacePreview
 
-A Mission Control-style workspace previewer for the [AeroSpace](https://github.com/nikitabobko/AeroSpace)
-tiling window manager. Press **Hyper+S** (⌘⌃⌥⇧S) to get a full-screen overlay of all your
-workspaces with live window thumbnails; click (or type / arrow around) to switch workspace or
-focus a window.
+AeroSpacePreview is a Mission Control-style workspace previewer for the
+[AeroSpace](https://github.com/nikitabobko/AeroSpace) tiling window manager. Press Hyper+S
+(⌘⌃⌥⇧S) to open a full-screen overview of occupied workspaces, see live window thumbnails,
+and switch workspace or focus a window with the keyboard or mouse.
 
-AeroSpace bypasses native macOS Spaces, so Mission Control shows nothing useful. This fills
-that gap.
-
-Tested against **AeroSpace 0.20.3-Beta** on **macOS 14+** (macOS 14 is the hard floor —
-the capture path needs `SCScreenshotManager`).
-
-## Build & run
-
-No Xcode project — everything goes through SwiftPM and the Makefile:
-
-```sh
-make bundle   # release build + assemble build/AeroSpacePreview.app (ad-hoc signed)
-make run      # bundle + launch detached
-make dev      # bundle + run attached to the terminal (NSLog output visible)
-swift test    # unit tests
-```
-
-The app is an agent (`LSUIElement`): nothing appears in the Dock. It lives in the menu bar
-as a `square.grid.2x2` icon whose menu can show the overlay, toggle **Launch at Login**,
-toggle the session-only **Show Diagnostics** HUD, show an about box, and quit.
-
-> **Toolchain note**: the Makefile pins `TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault`.
-> If you invoke `swift` directly and get SDK errors from a custom toolchain, do the same.
-
-## Permissions
-
-- **Screen Recording** — required for window thumbnails and the rendered-wallpaper
-  backdrop. The first launch triggers the system prompt (the app warms up ScreenCaptureKit
-  at startup). If denied, the overlay still works fully with app-icon placeholder cards
-  and the visual-effect fallback, and shows a hint with a button to
-  System Settings → Privacy & Security → Screen Recording. The bundle ID and signature
-  are stable across rebuilds, so the grant persists.
-- **No Accessibility permission** is needed: the hotkey uses the Carbon
-  `RegisterEventHotKey` API and all window-manager state comes from the `aerospace` CLI.
-
-## Hotkey
-
-Hyper+S (⌘⌃⌥⇧S) is registered by the app itself — do **not** bind it in `aerospace.toml`.
-If registration fails at launch (another app owns the combination), the app logs
-`failed to register Hyper+S` and keeps running without a hotkey. Checked 2026-06-12: the
-default AeroSpace config and this machine's config have no Hyper bindings, so no collision.
-The combination is a single constant in `AppDelegate.swift` if you need to change it.
-
-## Usage
-
-| Input | Effect |
-|---|---|
-| Hyper+S | toggle the overlay |
-| click tile / thumbnail | switch workspace / focus that window |
-| arrow keys | move tile selection (←/→ wrap, ↑/↓ clamp) |
-| type a name prefix | select the matching workspace; a unique exact match switches immediately |
-| Enter | switch to selected workspace |
-| Esc / click backdrop | dismiss |
-| menu-bar **Show Diagnostics** | show/hide the diagnostics HUD for this app session |
-
-Workspaces shown: occupied ones plus the focused one (even if empty), in AeroSpace's
-natural sort order. The backdrop is a fresh still of the monitor's currently rendered
-wallpaper, lightly blurred and dimmed; the previous still is cached between summons to
-avoid flashing the windows behind the overlay. An initial one-shot pass lets thumbnails
-pop in progressively (~30 ms per window, serialized inside ScreenCaptureKit). It then
-transitions to change-aware streams at up to 30 fps: animated windows update in real time
-while static windows keep their still image.
-
-### Layout previews
-
-Tiles render a miniature of the workspace's real tiled layout when the app has seen that
-workspace at least once: window frames are cached on every summon and again ~300 ms after
-you switch workspace through the overlay, so normal use populates the cache by itself.
-A tile falls back to a uniform thumbnail grid when no trustworthy layout exists — the
-workspace hasn't been visible since the app launched, or its window set changed while it
-was hidden. The cache is in-memory only; a restart starts over from grids.
-
-If you want the cache to also pick up workspace switches made *outside* the overlay
-(plain `alt-1`-style bindings), a future `exec-on-workspace-change` hook in
-`aerospace.toml` could ping the app to harvest on every switch — documented as a stretch
-goal in PLAN.md M7, not wired up yet.
-
-## Debug flags
-
-```sh
-AeroSpacePreview --dump               # print the AeroSpace snapshot as JSON and exit
-AeroSpacePreview --dump-images DIR    # write a thumbnail/placeholder PNG per window and exit
-AeroSpacePreview --show-on-launch     # summon the overlay immediately (testing)
-AeroSpacePreview --debug-hud          # enable the diagnostics HUD (also available from the menu)
-```
-
-Diagnostics are off by default and remain available in release builds. The compact top-right
-HUD samples at 2 Hz and reports live-stream/input, conversion, UI-delivery/backlog, latency,
-top-window bandwidth, CPU, memory-footprint, and idle-wakeup metrics. “UI” is delivery to the
-SwiftUI thumbnail store, not proof of physical display presentation. The menu checkmark is
-session-only; toggling it updates an open overlay or takes effect on the next summon.
-
-Each summon logs timing and live-stream startup via NSLog (`make dev` to see it):
-`summon — state 80 ms, capture 290 ms (8/8 windows)` and
-`live capture — 8/8 streams at up to 30 fps`.
+AeroSpace implements virtual workspaces outside native macOS Spaces, so the system Mission
+Control view cannot represent them. AeroSpacePreview fills that gap.
 
 ## Requirements
 
-- AeroSpace installed and running (`brew install --cask nikitabobko/tap/aerospace`);
-  the CLI is discovered at `/opt/homebrew/bin/aerospace`, `/usr/local/bin/aerospace`,
-  then `$PATH`.
+- macOS 14 or later.
+- AeroSpace installed and running. The app has been exercised with AeroSpace 0.20.3-Beta.
+- Xcode with its bundled Swift toolchain for building from source.
 
-See [SPEC.md](SPEC.md) for the original v1 specification and [PLAN.md](PLAN.md) for the
-milestone history and deferred roadmap.
+The CLI is discovered at `/opt/homebrew/bin/aerospace`, `/usr/local/bin/aerospace`, and then on
+`PATH`. Homebrew users can install AeroSpace with:
+
+```sh
+brew install --cask nikitabobko/tap/aerospace
+```
+
+## Build and run
+
+There is no Xcode project or packaged release. Build the application from the repository with
+the Makefile:
+
+```sh
+make run
+```
+
+This creates an ad-hoc-signed `build/AeroSpacePreview.app` and launches it. The app is an agent:
+it has no Dock icon and remains available through the `square.grid.2x2` menu-bar icon.
+
+Other development targets are:
+
+```sh
+make build    # compile the release executable
+make bundle   # build, assemble, and ad-hoc sign the application bundle
+make dev      # run attached so NSLog output remains visible
+make test     # run the Swift Testing suite
+make clean    # remove .build/ and build/
+```
+
+The Makefile pins `TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault`. Invoking `swift` directly
+can select an incompatible custom toolchain, so the Makefile targets are the supported workflow.
+
+## Permissions
+
+Screen Recording is required for window images and the rendered-wallpaper backdrop. The first
+launch warms ScreenCaptureKit and may trigger the macOS permission prompt. If permission is
+denied, the overlay still supports navigation, using app-icon cards and a visual-effect backdrop.
+It also offers a shortcut to System Settings → Privacy & Security → Screen Recording.
+
+Accessibility permission is not required. The global hotkey uses the Carbon hotkey API, and
+workspace/window actions go through the AeroSpace CLI.
+
+## Using the overlay
+
+Hyper+S is registered by AeroSpacePreview itself; do not bind the same combination in
+`aerospace.toml`. If another application already owns it, AeroSpacePreview logs the failure and
+continues running without a global hotkey. The menu-bar command can still open the overlay.
+
+| Input | Effect |
+|---|---|
+| Hyper+S | Toggle the overlay |
+| Click a workspace tile | Switch to that workspace |
+| Click a window thumbnail | Focus that window |
+| Left or right arrow | Move selection, wrapping at the ends |
+| Up or down arrow | Move by one grid row, clamping at the edges |
+| Type a workspace-name prefix | Select a match; an exact unique name switches immediately |
+| Enter | Switch to the selected workspace |
+| Esc or click the backdrop | Dismiss without an action |
+
+The overlay includes every occupied workspace plus the focused workspace when it is empty.
+Workspaces use AeroSpace's natural name order. Initial window images appear progressively, then
+changed window content continues updating at up to 30 fps while static thumbnails remain still.
+
+When AeroSpacePreview has observed a workspace while it was visible, its tile mirrors the real
+tiled layout. A uniform thumbnail grid is used after launch for unseen workspaces and whenever a
+hidden workspace's window set has changed. Layout observations are kept only until the app quits.
+
+The backdrop uses a fresh image of the focused display's rendered wallpaper, lightly blurred and
+dimmed. A cached image prevents the real windows behind the panel from flashing while the next
+background arrives.
+
+## Menu-bar commands
+
+The menu-bar item provides:
+
+- Show Workspace Preview.
+- Show Diagnostics, retained for the current app session.
+- Launch at Login.
+- About AeroSpacePreview.
+- Quit AeroSpacePreview.
+
+## Diagnostics and debug commands
+
+Diagnostics are off by default and remain available in release builds. Enable them from the menu
+or launch with `--debug-hud`. The HUD shows capture activity, conversion and delivery rates,
+backlog, latency, high-bandwidth windows, CPU, memory footprint, and idle wakeups. Each dismissal
+also writes a summary to NSLog; use `make dev` to keep logs visible.
+
+The executable accepts these development commands:
+
+```sh
+AeroSpacePreview --dump               # print the AeroSpace snapshot as JSON and exit
+AeroSpacePreview --dump-images DIR    # write a thumbnail or placeholder per window and exit
+AeroSpacePreview --show-on-launch     # summon the overlay immediately
+AeroSpacePreview --debug-hud          # start with diagnostics enabled
+```
+
+After `make build`, replace `AeroSpacePreview` above with
+`.build/release/AeroSpacePreview`. After `make bundle`, the executable is also available at
+`build/AeroSpacePreview.app/Contents/MacOS/AeroSpacePreview`.
+
+## Current limitations
+
+- The overlay targets the focused display rather than presenting independently on every display.
+- The hotkey and appearance are not configurable.
+- Large workspace counts can outgrow the fixed, non-scrolling tile grid.
+- Layout history does not observe workspace switches performed outside this overlay.
+- There is no notarized distribution or installer.
+
+## Technical and contributor information
+
+The Swift source is the only authoritative description of behavior. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for a consolidated explanation of the current design and
+[AGENTS.md](AGENTS.md) for repository contribution conventions.

@@ -1,6 +1,6 @@
 import CoreGraphics
 
-/// A window as reported by AeroSpace. `id` is a CGWindowID (verified in M0),
+/// A window as reported by AeroSpace. `id` is a CGWindowID, verified as
 /// usable directly with ScreenCaptureKit.
 struct AeroSpaceWindow: Codable, Equatable, Sendable {
     let id: CGWindowID

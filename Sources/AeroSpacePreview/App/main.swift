@@ -23,7 +23,7 @@ if CommandLine.arguments.contains("--dump") {
 
 if let flagIndex = CommandLine.arguments.firstIndex(of: "--dump-images"),
    CommandLine.arguments.indices.contains(flagIndex + 1) {
-    // SCContentFilter needs a window-server connection (M0 finding).
+    // SCContentFilter needs a window-server connection.
     _ = NSApplication.shared
     let dir = URL(fileURLWithPath: CommandLine.arguments[flagIndex + 1])
     let done = DispatchSemaphore(value: 0)

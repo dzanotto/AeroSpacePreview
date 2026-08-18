@@ -6,7 +6,7 @@ Review method: static, read-only inspection; tests were not run during the revie
 
 ## Purpose
 
-This document records potential refactors, simplifications, and cleanups for later investigation. It is a working backlog, not a commitment to implement every item. Validate each finding against real usage and measurements before changing behavior.
+This document records potential refactors, simplifications, and cleanups for later investigation. It is a non-authoritative work tracker, not technical documentation or a commitment to implement every item. The source is authoritative; current design explanations are consolidated in [ARCHITECTURE.md](ARCHITECTURE.md). Validate each finding against real usage and measurements before changing behavior.
 
 ## Tracking conventions
 
@@ -41,7 +41,7 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 | R-08 | P2 | Open | Make interaction ownership explicit |
 | R-09 | P3 | Open | Remove or implement unused state |
 | R-10 | P3 | Open | Harden pure helpers and parsing |
-| R-11 | P3 | Open | Refresh documentation |
+| R-11 | P3 | Resolved | Refresh documentation |
 | R-12 | P2 | Open | Add tests around lifecycle and infrastructure boundaries |
 
 ## Findings
@@ -184,18 +184,16 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 ### R-11 — Refresh documentation
 
 - **Priority:** P3
-- **Status:** Open
+- **Status:** Resolved
 - **Area:** README / specification / plan
-- **Evidence:**
+- **Original evidence:**
   - `PLAN.md` says live thumbnails use 640-pixel output; production uses 320.
   - `SPEC.md` still describes static thumbnails, a 250 ms timeout, a nonexistent monitor field, and menu/live thumbnails as future work.
   - `README.md` recommends `swift test`, while repository guidance says to use `make test` so the Xcode toolchain is pinned.
-- **Impact:** Contributors can make decisions from outdated behavior and use the wrong build command.
-- **Candidate direction:** Decide whether `SPEC.md` is historical or current. If historical, label it prominently and link to current behavior; otherwise update it. Correct the PLAN resolution and README test command.
-- **Questions to define:**
-  - Which document is authoritative for current behavior?
-  - Should completed milestone notes remain immutable historical records?
-- **Resolution notes:** _Pending._
+- **Original impact:** Contributors could make decisions from outdated behavior and use the wrong build command.
+- **Decision:** Source code is the only authority. `README.md` is the advanced-user entry point, and `ARCHITECTURE.md` is the single current technical/design document. Completed specifications and milestone records remain available through Git history rather than the working tree.
+- **Resolution notes:** Rewrote the README around installation, permissions, operation, diagnostics, and current limitations; added a code-aligned architecture document; removed `SPEC.md` and `PLAN.md`; narrowed `AGENTS.md` to contributor guidance; and replaced milestone/document references in source comments and the Makefile with self-contained rationale.
+- **Verification:** Repository-wide reference scan; `make test` — 61 tests in 15 suites passed.
 
 ### R-12 — Add tests around lifecycle and infrastructure boundaries
 
@@ -222,7 +220,6 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 2. R-04: simplify lifecycle ownership using what was learned from the tests.
 3. R-05 and R-08: address UI scalability and action semantics.
 4. R-06, R-07, R-09, and R-10: perform localized simplifications.
-5. R-11: update documentation after implementation decisions settle.
 
 ## Resolution log
 
@@ -234,3 +231,4 @@ Add dated entries here when findings change status.
 | 2026-08-14 | R-01 | Resolved with per-window keyed latest-frame delivery and replacement-aware diagnostics | `make test` — 53 tests in 13 suites passed |
 | 2026-08-14 | R-02 | Resolved with a bounded asynchronous subprocess runner, structured queries, cancellation cleanup, and termination escalation | `make test` — 60 tests in 15 suites passed |
 | 2026-08-14 | R-03 | Resolved by documenting `SCScreenshotManager.captureImage` as non-cancellable and the 600 ms limit as best-effort while retaining structured cleanup | SDK and API-contract inspection; source documentation updated; no runtime behavior changed |
+| 2026-08-18 | R-11 | Consolidated current documentation, made code authoritative, and removed the obsolete specification and milestone plan | Repository-wide reference scan; `make test` — 61 tests in 15 suites passed |

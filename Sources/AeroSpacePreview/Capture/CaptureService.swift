@@ -4,9 +4,9 @@ import CoreMedia
 import ScreenCaptureKit
 
 /// Window frames + display bounds from one SCShareableContent lookup, in
-/// global top-left-origin coordinates: the raw material for layout caching
-/// (M7). Frames are only meaningful for windows currently on a visible
-/// workspace — hidden ones are stacked off-viewport.
+/// global top-left-origin coordinates: the raw material for layout caching.
+/// Frames are only meaningful for windows currently on a visible workspace;
+/// hidden ones are stacked off-viewport.
 struct WindowFrameHarvest: Sendable {
     let frames: [CGWindowID: CGRect]
     let displays: [CGRect]
@@ -35,8 +35,8 @@ struct CaptureService: Sendable {
     /// Best-effort deadline: `SCScreenshotManager.captureImage` has no supported
     /// cancellation control, so a timed-out structured child may still delay task
     /// completion while ScreenCaptureKit winds down. Overlay presentation does not
-    /// wait for captures; placeholders fill in. M6 measurement found 250 ms tight
-    /// enough for the back of a 9-window queue to time out spuriously.
+    /// wait for captures; placeholders fill in. A 250 ms limit was observed to make
+    /// the back of a 9-window queue time out spuriously.
     var perWindowTimeout: Duration = .milliseconds(600)
     /// SCK serializes much of the capture work internally; with many windows
     /// in flight at once, every capture's wall clock inflates (the timeout
@@ -262,7 +262,7 @@ struct CaptureService: Sendable {
     }
 
     /// One shareable-content lookup, frames only — no pixels captured. Used
-    /// by the post-switch background harvest (M7), which needs the newly
+    /// by the post-switch background harvest, which needs the newly
     /// visible workspace's window frames but no thumbnails.
     func windowFrames(for windowIDs: [CGWindowID]) async -> WindowFrameHarvest? {
         guard let content = try? await SCShareableContent
@@ -276,7 +276,7 @@ struct CaptureService: Sendable {
     }
 
     /// The first ScreenCaptureKit capture of a process pays a ~370 ms session
-    /// warm-up (measured in M0); do it at launch so the first summon doesn't.
+    /// warm-up; do it at launch so the first summon does not pay it.
     /// On first run this also triggers the Screen Recording permission prompt.
     func warmUp() async {
         guard let content = try? await SCShareableContent

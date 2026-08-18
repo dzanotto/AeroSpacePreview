@@ -5,7 +5,7 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// `--dump-images <dir>`: capture a thumbnail (or placeholder) for every
-/// window AeroSpace knows about and write PNGs. M3 exit-criteria harness.
+/// window AeroSpace knows about and write PNGs for capture diagnostics.
 enum DumpImagesCommand {
     static func run(outputDir: URL) async -> Int32 {
         do {

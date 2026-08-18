@@ -3,7 +3,7 @@ import CoreGraphics
 import SwiftUI
 
 /// Owns the full-screen overlay panel and the per-summon snapshot lifecycle:
-/// summon → fetch AeroSpace state + capture thumbnails → present → act/dismiss.
+/// summon → fetch AeroSpace state → present → publish captures → act/dismiss.
 @MainActor
 final class OverlayController: NSObject, NSWindowDelegate {
     private var panel: OverlayPanel?
@@ -64,9 +64,9 @@ final class OverlayController: NSObject, NSWindowDelegate {
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
-        // captures start at the same moment and stream in one by one
-        // (~30 ms/window, serialized by SCK — see M6 measurements in
-        // PLAN.md). Placeholders cover whatever hasn't landed yet.
+        // captures start at the same moment and stream in one by one.
+        // ScreenCaptureKit serializes much of this work, so placeholders
+        // cover whatever has not arrived yet.
         captureTask = Task { [client, capture] in
             let clock = ContinuousClock()
             let start = clock.now

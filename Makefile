@@ -1,5 +1,5 @@
-# The machine's default Swift toolchain is broken against the current SDK;
-# pin the Xcode-bundled one (see SPEC.md §7, M0 findings).
+# Custom Swift toolchains can be incompatible with the installed macOS SDK;
+# pin the Xcode-bundled toolchain for reproducible builds.
 export TOOLCHAINS := com.apple.dt.toolchain.XcodeDefault
 
 APP_NAME := AeroSpacePreview

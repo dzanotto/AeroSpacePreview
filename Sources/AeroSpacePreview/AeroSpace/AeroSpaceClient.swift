@@ -28,9 +28,9 @@ struct AeroSpaceClient: Sendable {
     // MARK: - Queries
 
     func fetchSnapshot() async throws -> AeroSpaceSnapshot {
-        // Each CLI invocation costs tens of ms of process overhead (measured
-        // ~60-95 ms in M6); the three queries are independent, so run them
-        // concurrently — the snapshot costs one round-trip, not three.
+        // Each CLI invocation has measurable process overhead; the three
+        // queries are independent, so run them concurrently and make the
+        // snapshot cost one round-trip instead of three.
         async let windowsOutput = run([
             "list-windows", "--all", "--format", AeroSpaceParser.windowFormat,
         ])
@@ -57,7 +57,7 @@ struct AeroSpaceClient: Sendable {
     }
 
     /// The focused workspace and its window IDs — the minimal query for a
-    /// layout harvest after a workspace switch (M7).
+    /// layout harvest after a workspace switch.
     func fetchFocusedWorkspaceWindows() async throws -> (workspace: String, windowIDs: [CGWindowID]) {
         async let workspaceOutput = run([
             "list-workspaces", "--focused", "--format", "%{workspace}",
