@@ -42,7 +42,7 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 | R-09 | P3 | Open | Remove or implement unused state |
 | R-10 | P3 | Open | Harden pure helpers and parsing |
 | R-11 | P3 | Resolved | Refresh documentation |
-| R-12 | P2 | Open | Add tests around lifecycle and infrastructure boundaries |
+| R-12 | P2 | Resolved | Add tests around lifecycle and infrastructure boundaries |
 
 ## Findings
 
@@ -85,13 +85,13 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 - **Priority:** P2
 - **Status:** Open
 - **Area:** Architecture / maintainability
-- **Evidence:** `CaptureService.swift` owns one-shot capture, wallpaper capture, live-stream startup, image conversion, coalescing, timeout logic, and stream cleanup. `OverlayController` owns panel presentation, loading state, capture lifecycle, layout harvests, diagnostics, actions, and animation. `OverlayController.shutdown()` does not cancel `harvestTask`.
-- **Impact:** Lifecycle behavior is difficult to reason about and infrastructure components are difficult to test independently.
-- **Candidate direction:** Consider boundaries such as `OneShotWindowCapturer`, `DesktopBackgroundCapturer`, `LiveThumbnailCoordinator`, and `LiveStreamOutput`. Model overlay lifecycle explicitly as `idle`, `loading`, `visible`, and `hiding`, with one session object owning related tasks.
+- **Evidence:** `CaptureService.swift` owns one-shot capture, wallpaper capture, live-stream startup, image conversion, coalescing, timeout logic, and stream cleanup. `OverlayController` still coordinates panel presentation, AeroSpace state, capture consumption, layout caches, diagnostics, actions, and animation. R-12 introduced `OverlayLifetime`, which now models `idle`, `loading`, `visible`, and `hiding`, rejects stale session callbacks, owns per-session tasks, and cancels post-switch harvests at shutdown.
+- **Impact:** Capture infrastructure remains difficult to test independently, and the controller's summon flow still spans several responsibilities. The highest-risk lifecycle transitions and cleanup rules now have a deterministic boundary and focused coverage.
+- **Candidate direction:** Consider boundaries such as `OneShotWindowCapturer`, `DesktopBackgroundCapturer`, `LiveThumbnailCoordinator`, and `LiveStreamOutput`. Use the existing `OverlayLifetime` session boundary rather than introducing a second lifecycle abstraction.
 - **Questions to define:**
   - Which split reduces complexity without creating protocol-heavy abstractions?
-  - Should one overlay session own capture, diagnostics, and harvest cancellation together?
-  - Which tasks must be cancelled during application shutdown?
+  - Should more of the capture-and-publish workflow move behind the session boundary, or should the lifetime remain a narrow state/task owner?
+  - Should in-flight post-action AeroSpace commands also be explicitly cancelled during application shutdown?
 - **Resolution notes:** _Pending._
 
 ### R-05 — Handle large workspace counts
@@ -198,28 +198,19 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 ### R-12 — Add tests around lifecycle and infrastructure boundaries
 
 - **Priority:** P2
-- **Status:** Open
+- **Status:** Resolved
 - **Area:** Testing
-- **Evidence:** Existing tests cover parsing, layout math, keyboard rules, placeholder rendering, frame coalescing, and diagnostic calculations well. The most important untested behavior sits behind concrete/private infrastructure.
-- **Coverage added:** R-01 now covers keyed live-stream buffering, newest-frame semantics, replacement diagnostics, and cancellation.
-- **Candidate direction:** Add focused coverage for the remaining boundaries:
-  - Process stdout/stderr, nonzero exit, timeout, and cancellation behavior.
-  - Cancellation-resistant timeout behavior.
-  - Overlay session transitions and shutdown cancellation.
-  - Missing or malformed debug-command arguments.
-  - Large workspace counts and nested click intent.
-  - Natural-sort ties and zero-display-overlap layouts.
-- **Questions to define:**
-  - Which dependencies need small protocols or closures for deterministic tests?
-  - Which ScreenCaptureKit behavior requires integration tests rather than unit tests?
-- **Resolution notes:** _Pending._
+- **Original evidence:** Tests covered parsing, layout math, keyboard rules, placeholder rendering, frame coalescing, and diagnostic calculations well, while important lifecycle and infrastructure behavior sat behind concrete/private components.
+- **Decision:** Add small concrete seams only where deterministic infrastructure tests require them. Keep platform behavior that cannot be established by a synthetic unit test documented as an integration constraint. Leave product-policy cases attached to their owning findings rather than resolving them implicitly through a testing change.
+- **Resolution notes:** R-01 covers keyed live-stream buffering, newest-frame semantics, replacement diagnostics, and cancellation. R-02 covers dual-pipe output, nonzero exit, timeout escalation, cancellation cleanup, output limits, and error classification. R-03 documents why a synthetic cancellation-resistant test cannot establish ScreenCaptureKit behavior. `OverlayLifetime` now provides an identity-based state and task-ownership boundary for `idle`, `loading`, `visible`, and `hiding`; it cancels capture, live-stream, diagnostics, and harvest work at the appropriate lifecycle boundary and rejects late work after shutdown.
+- **Deferred coverage:** Debug argument parsing, large-workspace layout, nested click intent, natural-sort ties, and zero-display-overlap policy remain with R-06, R-05, R-08, and R-10 respectively, where their expected behavior can be defined before tests lock it in.
+- **Verification:** `make test` — 90 tests in 18 suites passed. Focused lifecycle coverage exercises valid and stale transitions, shutdown from every active phase, idempotent resource cleanup, rejected late installation, harvest replacement, and harvest shutdown cancellation.
 
 ## Suggested order of investigation
 
-1. R-12: add test seams around the remaining infrastructure boundaries.
-2. R-04: simplify lifecycle ownership using what was learned from the tests.
-3. R-05 and R-08: address UI scalability and action semantics.
-4. R-06, R-07, R-09, and R-10: perform localized simplifications.
+1. R-04: simplify capture and controller responsibilities using the lifecycle seam.
+2. R-05 and R-08: address UI scalability and action semantics.
+3. R-06, R-07, R-09, and R-10: perform localized simplifications.
 
 ## Resolution log
 
@@ -232,3 +223,4 @@ Add dated entries here when findings change status.
 | 2026-08-14 | R-02 | Resolved with a bounded asynchronous subprocess runner, structured queries, cancellation cleanup, and termination escalation | `make test` — 60 tests in 15 suites passed |
 | 2026-08-14 | R-03 | Resolved by documenting `SCScreenshotManager.captureImage` as non-cancellable and the 600 ms limit as best-effort while retaining structured cleanup | SDK and API-contract inspection; source documentation updated; no runtime behavior changed |
 | 2026-08-18 | R-11 | Consolidated current documentation, made code authoritative, and removed the obsolete specification and milestone plan | Repository-wide reference scan; `make test` — 61 tests in 15 suites passed |
+| 2026-08-18 | R-12 | Added an identity-based overlay lifecycle/task owner, stale-callback guards, shutdown-safe harvest ownership, and focused lifecycle tests | `make test` — 90 tests in 18 suites passed |

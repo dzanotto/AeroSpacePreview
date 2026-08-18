@@ -7,8 +7,7 @@ import SwiftUI
 @MainActor
 final class OverlayController: NSObject, NSWindowDelegate {
     private var panel: OverlayPanel?
-    private var isLoading = false
-    private var isHiding = false
+    private let lifetime = OverlayLifetime()
     private var client: AeroSpaceClient?
     private let capture = CaptureService()
     private let frameCache = FrameCacheStore()
@@ -18,16 +17,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     /// the windows behind the panel while a new per-summon capture arrives.
     private var desktopBackgrounds: [CGDirectDisplayID: CGImage] = [:]
     private var diagnosticsEnabled: Bool
-    private var diagnosticsTask: Task<Void, Never>?
     private weak var currentViewModel: OverlayViewModel?
-    private var harvestTask: Task<Void, Never>?
-    /// Covers both the progressive one-shot pass and the live-stream consumer.
-    /// Dismissal cancels it in addition to explicitly stopping `liveCapture`.
-    private var captureTask: Task<Void, Never>?
-    /// Explicit owner for the SCStreams started after the one-shot pass. The
-    /// task above consumes its frames, but task cancellation is not relied on
-    /// as the only producer-shutdown signal.
-    private var liveCapture: LiveThumbnailCapture?
 
     var isVisible: Bool { panel?.isVisible ?? false }
     var isDiagnosticsEnabled: Bool { diagnosticsEnabled }
@@ -47,30 +37,35 @@ final class OverlayController: NSObject, NSWindowDelegate {
     func setDiagnosticsEnabled(_ enabled: Bool) {
         guard enabled != diagnosticsEnabled else { return }
         diagnosticsEnabled = enabled
-        guard isVisible, let currentViewModel else { return }
+        guard let sessionID = lifetime.currentSessionID,
+              lifetime.isCurrent(sessionID, phase: .visible),
+              let currentViewModel
+        else { return }
         if enabled {
-            startDiagnosticsSession(viewModel: currentViewModel)
+            startDiagnosticsSession(viewModel: currentViewModel, sessionID: sessionID)
         } else {
-            stopDiagnosticsSession(logSummary: true)
+            stopDiagnosticsSession(sessionID: sessionID, logSummary: true)
         }
     }
 
     func show() {
-        guard !isVisible, !isLoading else { return }
+        guard !isVisible else { return }
         guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else { return }
+        guard let sessionID = lifetime.beginLoading() else { return }
         let targetDisplayID = Self.displayID(for: targetScreen)
-        isLoading = true
-        stopCapture()
         if client == nil { client = try? AeroSpaceClient.discover() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
         // captures start at the same moment and stream in one by one.
         // ScreenCaptureKit serializes much of this work, so placeholders
         // cover whatever has not arrived yet.
-        captureTask = Task { [client, capture] in
+        let captureTask = Task { [client, capture] in
             let clock = ContinuousClock()
             let start = clock.now
             let content = await Self.loadState(client: client)
+            guard !Task.isCancelled,
+                  self.lifetime.isCurrent(sessionID, phase: .loading)
+            else { return }
 
             var stream: AsyncStream<CaptureEvent>?
             var windowCount = 0
@@ -88,16 +83,21 @@ final class OverlayController: NSObject, NSWindowDelegate {
             )
             let stateDone = clock.now
 
-            let viewModel = self.present(content, displayID: targetDisplayID)
-            self.isLoading = false
-            if let viewModel, self.diagnosticsEnabled {
-                self.startDiagnosticsSession(viewModel: viewModel)
+            guard let viewModel = self.present(content, displayID: targetDisplayID) else {
+                self.lifetime.abort(sessionID)
+                return
+            }
+            guard self.lifetime.markVisible(sessionID) else { return }
+            if self.diagnosticsEnabled {
+                self.startDiagnosticsSession(viewModel: viewModel, sessionID: sessionID)
             }
 
-            guard let stream, let viewModel else { return }
+            guard let stream else { return }
             var captured = 0
             for await event in stream {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled,
+                      self.lifetime.isCurrent(sessionID, phase: .visible)
+                else { return }
                 switch event {
                 case .frames(let harvest):
                     // The focused workspace is on screen right now, so its
@@ -132,7 +132,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
             // The one-shot pass supplies immediate stills and remains the
             // fallback for any stream that cannot start. Live streams publish
             // only changed frames; idle windows keep that still image.
-            guard !Task.isCancelled, self.isVisible,
+            guard !Task.isCancelled,
+                  self.lifetime.isCurrent(sessionID, phase: .visible),
                   case .snapshot(let snapshot) = content,
                   !snapshot.permissionDenied,
                   !snapshot.allWindowIDs.isEmpty
@@ -143,34 +144,34 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 framesPerSecond: 30,
                 diagnostics: self.diagnostics
             )
-            self.liveCapture = liveCapture
+            guard self.lifetime.installLiveCapture(liveCapture, for: sessionID) else { return }
             defer {
                 liveCapture.stop()
-                if self.liveCapture === liveCapture {
-                    self.liveCapture = nil
-                }
+                self.lifetime.releaseLiveCapture(liveCapture, for: sessionID)
             }
             for await frame in liveCapture.frames {
-                guard !Task.isCancelled, self.isVisible else { return }
+                guard !Task.isCancelled,
+                      self.lifetime.isCurrent(sessionID, phase: .visible)
+                else { return }
                 viewModel.thumbnails.update(frame.image, for: frame.windowID)
                 self.diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
             }
         }
+        lifetime.installCaptureTask(captureTask, for: sessionID)
     }
 
     func hide() {
-        stopCapture()
-        guard let panel, isVisible, !isHiding else { return }
-        stopDiagnosticsSession(logSummary: true)
-        isHiding = true
+        guard let panel, isVisible else { return }
+        guard let sessionID = lifetime.beginHiding() else { return }
+        stopDiagnosticsSession(sessionID: sessionID, logSummary: true)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.12
             panel.animator().alphaValue = 0
         }, completionHandler: {
             MainActor.assumeIsolated {
+                guard self.lifetime.finishHiding(sessionID) else { return }
                 panel.orderOut(nil)
                 self.currentViewModel = nil
-                self.isHiding = false
             }
         })
     }
@@ -243,15 +244,21 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     // MARK: - Diagnostics
 
-    private func startDiagnosticsSession(viewModel: OverlayViewModel) {
-        guard diagnosticsEnabled, isVisible, !diagnostics.isEnabled else { return }
-        diagnosticsTask?.cancel()
+    private func startDiagnosticsSession(
+        viewModel: OverlayViewModel,
+        sessionID: OverlayLifetime.SessionID
+    ) {
+        guard diagnosticsEnabled,
+              lifetime.isCurrent(sessionID, phase: .visible),
+              !diagnostics.isEnabled
+        else { return }
+        lifetime.stopDiagnostics(for: sessionID)
         let labels = viewModel.content.windowLabelsForDiagnostics
         diagnostics.beginSession(windowLabels: labels)
 
         let diagnostics = self.diagnostics
         let sampler = resourceSampler
-        diagnosticsTask = Task.detached(priority: .utility) { [weak viewModel] in
+        let diagnosticsTask = Task.detached(priority: .utility) { [weak self, weak viewModel] in
             var baseline = sampler.sample()
             var previous = baseline
 
@@ -281,16 +288,22 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 }
 
                 guard let snapshot = diagnostics.makeSnapshot() else { return }
-                await MainActor.run { [weak viewModel] in
+                await MainActor.run { [weak self, weak viewModel] in
+                    guard self?.lifetime.isCurrent(sessionID, phase: .visible) == true else {
+                        return
+                    }
                     viewModel?.publishDiagnostics(snapshot)
                 }
             }
         }
+        lifetime.installDiagnosticsTask(diagnosticsTask, for: sessionID)
     }
 
-    private func stopDiagnosticsSession(logSummary: Bool) {
-        diagnosticsTask?.cancel()
-        diagnosticsTask = nil
+    private func stopDiagnosticsSession(
+        sessionID: OverlayLifetime.SessionID,
+        logSummary: Bool
+    ) {
+        lifetime.stopDiagnostics(for: sessionID)
         currentViewModel?.publishDiagnostics(nil)
         guard let snapshot = diagnostics.endSession() else { return }
         if logSummary {
@@ -299,18 +312,11 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func shutdown() {
-        stopCapture()
-        stopDiagnosticsSession(logSummary: true)
-    }
-
-    /// Stops both stages of capture. Live streams have their own producer task,
-    /// so dismissing the overlay signals that producer directly as well as
-    /// cancelling the controller's consumer/one-shot task.
-    private func stopCapture() {
-        liveCapture?.stop()
-        liveCapture = nil
-        captureTask?.cancel()
-        captureTask = nil
+        if let sessionID = lifetime.currentSessionID {
+            stopDiagnosticsSession(sessionID: sessionID, logSummary: true)
+        }
+        lifetime.shutdown()
+        currentViewModel = nil
     }
 
     /// Runs an aerospace action off the main actor and dismisses immediately —
@@ -334,8 +340,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     /// use of the app populates the cache by itself this way.
     private func scheduleFocusedWorkspaceHarvest() {
         guard let client, ScreenRecordingPermission.isGranted else { return }
-        harvestTask?.cancel()
-        harvestTask = Task { [capture, frameCache] in
+        let harvestTask = Task { [capture, frameCache] in
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled,
                   let focused = try? await client.fetchFocusedWorkspaceWindows(),
@@ -349,6 +354,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 harvest: harvest
             )
         }
+        lifetime.replaceHarvestTask(harvestTask)
     }
 
     private func makePanel() -> OverlayPanel {

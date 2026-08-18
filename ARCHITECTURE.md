@@ -42,9 +42,13 @@ selected infrastructure boundaries.
 the first overlay does not pay the full first-use cost.
 
 `OverlayController` is main-actor isolated. It owns the panel, AeroSpace client, capture
-service, frame cache, diagnostics, and the tasks associated with the current overlay session.
-`OverlayViewModel` owns per-summon presentation state. The SwiftUI layer renders that state and
-emits `OverlayActions`; it does not call the CLI or ScreenCaptureKit directly.
+service, frame cache, and diagnostics. `OverlayLifetime` models the active summon as `idle`,
+`loading`, `visible`, or `hiding` and owns its capture, live-stream, and diagnostics tasks.
+Opaque session IDs reject callbacks that arrive after dismissal or shutdown. Post-switch layout
+harvests deliberately outlive normal dismissal, but the same lifetime owner cancels them during
+application shutdown. `OverlayViewModel` owns per-summon presentation state. The SwiftUI layer
+renders that state and emits `OverlayActions`; it does not call the CLI or ScreenCaptureKit
+directly.
 
 The rendered state deliberately has different update granularities:
 
@@ -63,13 +67,15 @@ overlay for `--show-on-launch`.
 
 Summoning follows this sequence:
 
-1. Select the focused display and reject duplicate summons while loading or visible.
+1. Select the focused display, create a new lifecycle session, and reject duplicate summons
+   unless the lifetime is idle.
 2. Fetch AeroSpace state.
 3. Create the eager one-shot capture stream when Screen Recording is available.
 4. Present the panel immediately with placeholders and any cached wallpaper/layouts.
 5. Apply frame geometry, a fresh wallpaper, and window stills as they arrive.
 6. After the one-shot pass finishes, start live streams for the same window set.
-7. Stop the one-shot consumer and every live stream when the overlay dismisses or the app exits.
+7. Stop the one-shot consumer and every live stream when the overlay dismisses or the app exits;
+   session identity prevents their late results from reaching a replacement view model.
 
 The panel dismisses on Escape, a backdrop click, loss of key status, a repeated toggle, or a
 workspace/window action. Actions dismiss first, invoke the CLI asynchronously, and schedule a
