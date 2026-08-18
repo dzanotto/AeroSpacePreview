@@ -14,12 +14,15 @@ struct AeroSpaceClient: Sendable {
         "/usr/local/bin/aerospace",
     ]
 
-    static func discover() throws -> AeroSpaceClient {
+    static func discover(
+        environmentPath: String? = ProcessInfo.processInfo.environment["PATH"],
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) throws -> AeroSpaceClient {
         var candidates = defaultSearchPaths
-        if let envPath = ProcessInfo.processInfo.environment["PATH"] {
+        if let envPath = environmentPath {
             candidates += envPath.split(separator: ":").map { "\($0)/aerospace" }
         }
-        guard let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+        guard let found = candidates.first(where: isExecutable) else {
             throw AeroSpaceError.cliNotFound(searched: candidates)
         }
         return AeroSpaceClient(cliPath: found)

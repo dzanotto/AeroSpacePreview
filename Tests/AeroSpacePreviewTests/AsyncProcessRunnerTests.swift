@@ -38,6 +38,26 @@ import Testing
         #expect(String(decoding: output.stderr, as: UTF8.self) == "specific failure\n")
     }
 
+    @Test func reportsExecutableLaunchFailure() async {
+        let runner = makeRunner()
+        let missingExecutable = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("missing-command")
+
+        do {
+            _ = try await runner.run(executableURL: missingExecutable, arguments: [])
+            Issue.record("Expected launch to fail")
+        } catch let error as AsyncProcessRunnerError {
+            guard case .launchFailed(let message) = error else {
+                Issue.record("Unexpected runner error: \(error)")
+                return
+            }
+            #expect(!message.isEmpty)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     @Test func timeoutEscalatesWhenProcessIgnoresTermination() async {
         let runner = makeRunner(timeout: 0.05, terminationGracePeriod: 0.05)
         let clock = ContinuousClock()

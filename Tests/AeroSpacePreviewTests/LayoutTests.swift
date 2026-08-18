@@ -36,6 +36,22 @@ import CoreGraphics
         #expect(layout.displayAspect == 2.0)
     }
 
+    @Test func displaySelectionUsesAggregateOverlapAcrossAllWindows() throws {
+        let left = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let right = CGRect(x: 100, y: 0, width: 100, height: 100)
+        let frames = [
+            CGRect(x: 10, y: 0, width: 80, height: 50),
+            CGRect(x: 110, y: 0, width: 60, height: 50),
+            CGRect(x: 120, y: 50, width: 60, height: 50),
+        ]
+
+        let selected = try #require(LayoutMath.pickDisplay(
+            for: frames,
+            displays: [left, right]
+        ))
+        #expect(selected == right)
+    }
+
     @Test func emptyFramesOrNoDisplaysYieldNoLayout() {
         #expect(LayoutMath.normalize(frames: [:], displays: [display]) == nil)
         #expect(LayoutMath.normalize(frames: [1: CGRect(x: 0, y: 0, width: 10, height: 10)], displays: []) == nil)

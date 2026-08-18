@@ -30,16 +30,19 @@ final class OverlayViewModel: ObservableObject {
 
     private let workspaceNames: [String]
     private let columns: Int
+    private let typedPrefixResetDelay: Duration
     private var typedResetTask: Task<Void, Never>?
 
     init(
         content: OverlayContent,
         actions: OverlayActions,
-        desktopBackground: CGImage? = nil
+        desktopBackground: CGImage? = nil,
+        typedPrefixResetDelay: Duration = .seconds(1.5)
     ) {
         self.content = content
         self.actions = actions
         self.desktopBackground = desktopBackground
+        self.typedPrefixResetDelay = typedPrefixResetDelay
         if case .snapshot(let snapshot) = content {
             thumbnails = ThumbnailStore(windowIDs: snapshot.allWindowIDs)
             workspaceNames = snapshot.workspaces.map(\.name)
@@ -122,8 +125,9 @@ final class OverlayViewModel: ObservableObject {
 
     private func scheduleTypedReset() {
         typedResetTask?.cancel()
+        let delay = typedPrefixResetDelay
         typedResetTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1.5))
+            try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             self?.typedPrefix = ""
         }

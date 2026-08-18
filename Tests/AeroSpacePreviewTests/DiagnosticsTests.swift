@@ -43,6 +43,46 @@ import Testing
         ) == nil)
     }
 
+    @Test func rejectsNonMonotonicResourceSamplesAndArithmeticOverflow() {
+        let baseline = ProcessResourceSample(
+            wallTimeNanoseconds: 10,
+            cpuTimeNanoseconds: 20,
+            physicalFootprintBytes: 30,
+            packageIdleWakeups: 40
+        )
+        #expect(ProcessResourceMath.delta(from: baseline, to: .init(
+            wallTimeNanoseconds: 10,
+            cpuTimeNanoseconds: 21,
+            physicalFootprintBytes: 30,
+            packageIdleWakeups: 41
+        )) == nil)
+        #expect(ProcessResourceMath.delta(from: baseline, to: .init(
+            wallTimeNanoseconds: 11,
+            cpuTimeNanoseconds: 19,
+            physicalFootprintBytes: 30,
+            packageIdleWakeups: 41
+        )) == nil)
+        #expect(ProcessResourceMath.delta(from: baseline, to: .init(
+            wallTimeNanoseconds: 11,
+            cpuTimeNanoseconds: 21,
+            physicalFootprintBytes: 30,
+            packageIdleWakeups: 39
+        )) == nil)
+        #expect(ProcessResourceMath.nanoseconds(
+            fromMachTicks: UInt64.max,
+            numerator: UInt32.max,
+            denominator: 1
+        ) == nil)
+    }
+
+    @Test func samplesTheCurrentProcessUsingTheSuppliedWallClockValue() throws {
+        let sample = try #require(ProcessResourceSampler().sample(wallTimeNanoseconds: 123_456))
+
+        #expect(sample.wallTimeNanoseconds == 123_456)
+        #expect(sample.cpuTimeNanoseconds > 0)
+        #expect(sample.physicalFootprintBytes > 0)
+    }
+
     @Test func formatsPhysicalFootprintInMegabytesAndUnavailableState() {
         #expect(DiagnosticsHUDFormatter.physicalFootprint(176_160_768) == "168 MB")
         #expect(DiagnosticsHUDFormatter.physicalFootprint(nil) == "—")
@@ -234,6 +274,211 @@ import Testing
         #expect(timing == nil)
         #expect(!collector.isEnabled)
         #expect(collector.makeSnapshot() == nil)
+    }
+
+    @Test func staleCallbacksFromAnEndedSessionCannotContaminateTheNextSession() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1])
+        let firstStart = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "First"], now: firstStart)
+        let oldTiming = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 100,
+            height: 50,
+            windowServerDisplayMachTime: nil
+        ))
+        let oldConversion = try #require(collector.beginConversion(
+            timing: oldTiming,
+            now: firstStart
+        ))
+        _ = collector.endSession(
+            now: firstStart + DiagnosticsMachClock.ticks(seconds: 1)
+        )
+
+        collector.prepareSummon(windowIDs: [2])
+        let secondStart = mach_absolute_time()
+        collector.beginSession(windowLabels: [2: "Second"], now: secondStart)
+        collector.recordYielded(timing: oldTiming)
+        collector.recordUIDelivery(
+            timing: oldTiming,
+            now: secondStart + DiagnosticsMachClock.ticks(seconds: 0.01)
+        )
+        collector.recordPreConversionCoalesced(timing: oldTiming)
+        collector.endConversion(
+            oldConversion,
+            succeeded: true,
+            convertedPixelCount: 5_000,
+            now: secondStart + DiagnosticsMachClock.ticks(seconds: 0.01)
+        )
+
+        let snapshot = try #require(collector.makeSnapshot(
+            now: secondStart + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.capture.requestedWindowCount == 1)
+        #expect(snapshot.capture.changedFrames == 0)
+        #expect(snapshot.conversion.framesEntered == 0)
+        #expect(snapshot.conversion.successful == 0)
+        #expect(snapshot.delivery.yieldedFrames == 0)
+        #expect(snapshot.delivery.uiDeliveredFrames == 0)
+        #expect(snapshot.delivery.droppedOrCoalescedFrames == 0)
+        #expect(snapshot.latency.callbackArrivalToUIDelivery == nil)
+    }
+
+    @Test func assemblesConversionLatencyAndProcessPeaksIntoTheSnapshot() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1])
+        let start = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "Editor"], now: start)
+
+        let sourceTime = mach_absolute_time()
+        let successfulTiming = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 200,
+            height: 100,
+            windowServerDisplayMachTime: sourceTime
+        ))
+        let successfulConversion = try #require(collector.beginConversion(
+            timing: successfulTiming,
+            now: start
+        ))
+        collector.endConversion(
+            successfulConversion,
+            succeeded: true,
+            convertedPixelCount: 20_000,
+            now: start + DiagnosticsMachClock.ticks(seconds: 0.004)
+        )
+        collector.recordYielded(timing: successfulTiming)
+        collector.recordUIDelivery(
+            timing: successfulTiming,
+            now: successfulTiming.callbackArrivalMachTime
+                + DiagnosticsMachClock.ticks(seconds: 0.01)
+        )
+
+        let failedTiming = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .started,
+            width: 200,
+            height: 100,
+            windowServerDisplayMachTime: nil
+        ))
+        let failedConversion = try #require(collector.beginConversion(
+            timing: failedTiming,
+            now: start
+        ))
+        collector.endConversion(
+            failedConversion,
+            succeeded: false,
+            convertedPixelCount: 0,
+            now: start + DiagnosticsMachClock.ticks(seconds: 0.006)
+        )
+
+        collector.recordProcessResources(
+            currentCPUPercentage: 80,
+            averageCPUPercentage: 80,
+            physicalFootprintBytes: 500,
+            packageIdleWakeupsPerSecond: 9
+        )
+        collector.recordProcessResources(
+            currentCPUPercentage: 25,
+            averageCPUPercentage: 30,
+            physicalFootprintBytes: 100,
+            packageIdleWakeupsPerSecond: 2
+        )
+
+        let snapshot = try #require(collector.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.conversion.framesEntered == 2)
+        #expect(snapshot.conversion.successful == 1)
+        #expect(snapshot.conversion.failed == 1)
+        #expect(snapshot.conversion.convertedMegapixels == 0.02)
+        #expect(snapshot.conversion.duration?.averageMilliseconds == 5)
+        #expect(snapshot.conversion.duration?.p95Milliseconds == 6)
+        #expect(abs((snapshot.latency.callbackArrivalToUIDelivery?.averageMilliseconds ?? 0) - 10) < 0.001)
+        #expect(snapshot.latency.windowServerToUIDelivery != nil)
+        #expect(snapshot.process.currentCPUPercentage == 25)
+        #expect(snapshot.process.averageCPUPercentage == 30)
+        #expect(snapshot.process.peakCPUPercentage == 80)
+        #expect(snapshot.process.physicalFootprintBytes == 100)
+        #expect(snapshot.process.peakPhysicalFootprintBytes == 500)
+        #expect(snapshot.process.packageIdleWakeupsPerSecond == 2)
+    }
+
+    @Test func successiveSnapshotsReportRatesForOnlyTheLatestInterval() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1])
+        let start = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "Editor"], now: start)
+
+        let first = try #require(collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 1_000,
+            height: 1_000,
+            windowServerDisplayMachTime: nil
+        ))
+        collector.recordYielded(timing: first)
+        collector.recordUIDelivery(timing: first)
+        let firstSnapshot = try #require(collector.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(firstSnapshot.capture.changedFramesPerSecond == 1)
+        #expect(firstSnapshot.capture.changedMegapixelsPerSecond == 1)
+        #expect(firstSnapshot.delivery.yieldedFramesPerSecond == 1)
+        #expect(firstSnapshot.delivery.uiDeliveredFramesPerSecond == 1)
+
+        for _ in 0..<2 {
+            let timing = try #require(collector.recordFrame(
+                windowID: 1,
+                status: .complete,
+                width: 1_000,
+                height: 1_000,
+                windowServerDisplayMachTime: nil
+            ))
+            collector.recordYielded(timing: timing)
+            collector.recordUIDelivery(timing: timing)
+        }
+        let secondSnapshot = try #require(collector.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 3)
+        ))
+        #expect(secondSnapshot.capture.changedFrames == 3)
+        #expect(secondSnapshot.capture.changedFramesPerSecond == 1)
+        #expect(secondSnapshot.capture.changedMegapixelsPerSecond == 1)
+        #expect(secondSnapshot.delivery.yieldedFrames == 3)
+        #expect(secondSnapshot.delivery.yieldedFramesPerSecond == 1)
+        #expect(secondSnapshot.delivery.uiDeliveredFramesPerSecond == 1)
+    }
+
+    @Test func enablingMidSummonKeepsDeduplicatedStartupCountsWithoutInventingLatency() throws {
+        let collector = CaptureDiagnostics()
+        collector.prepareSummon(windowIDs: [1, 2, 3])
+        let startup = mach_absolute_time()
+        let startupToken = collector.beginLiveStreamStartup(now: startup)
+        collector.recordStreamStarted(windowID: 1)
+        collector.recordStreamStarted(windowID: 1)
+        collector.recordStreamStartupFailure(windowID: 2)
+        collector.recordStreamStartupFailure(windowID: 2)
+        collector.endLiveStreamStartup(startupToken)
+
+        let sessionStart = mach_absolute_time()
+        collector.beginSession(windowLabels: [1: "Editor"], now: sessionStart)
+        _ = collector.recordFrame(
+            windowID: 1,
+            status: .complete,
+            width: 100,
+            height: 100,
+            windowServerDisplayMachTime: nil
+        )
+
+        let snapshot = try #require(collector.makeSnapshot(
+            now: sessionStart + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.capture.requestedWindowCount == 3)
+        #expect(snapshot.capture.streamsStarted == 1)
+        #expect(snapshot.capture.streamStartupFailures == 1)
+        #expect(snapshot.capture.firstLiveFrameLatencyMilliseconds == nil)
     }
 }
 

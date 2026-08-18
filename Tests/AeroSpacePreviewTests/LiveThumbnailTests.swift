@@ -172,6 +172,24 @@ import Testing
         #expect(!buffer.submit(3, for: 303).accepted)
     }
 
+    @Test func acceptanceCallbackRunsBeforeAWaitingConsumerCanObserveTheElement() async throws {
+        let buffer = LatestByKeyBuffer<CGWindowID, Int>()
+        let events = SynchronousEventLog()
+        let consumer = Task {
+            let value = await buffer.next()
+            events.append("consumed")
+            return value
+        }
+        try await Task.sleep(for: .milliseconds(10))
+
+        _ = buffer.submit(42, for: 101) { _ in
+            events.append("accepted")
+        }
+
+        #expect(await consumer.value == 42)
+        #expect(events.values == ["accepted", "consumed"])
+    }
+
     @Test func cancellingPullBasedStreamFinishesWaitingKeyedBuffer() async {
         let buffer = LatestByKeyBuffer<CGWindowID, Int>()
         let stream = AsyncStream(
@@ -199,6 +217,18 @@ private final class SynchronousStopCounter: @unchecked Sendable {
 
     func increment() {
         lockedValue.withLock { $0 += 1 }
+    }
+}
+
+private final class SynchronousEventLog: @unchecked Sendable {
+    private let lockedValues = OSAllocatedUnfairLock(initialState: [String]())
+
+    var values: [String] {
+        lockedValues.withLock { $0 }
+    }
+
+    func append(_ value: String) {
+        lockedValues.withLock { $0.append(value) }
     }
 }
 
