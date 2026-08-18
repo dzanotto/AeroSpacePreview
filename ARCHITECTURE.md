@@ -110,11 +110,12 @@ Other nonzero exits remain command failures so unrelated server errors are not h
 ### One-shot pass
 
 `OneShotCaptureService.captureStream` performs one `SCShareableContent` lookup and yields the
-requested windows' geometry before any image events. It then runs desktop-background and window
-screenshot jobs through `BoundedAsyncBatch`. The wallpaper remains in this service so it reuses
-the same content lookup and participates in the same concurrency budget. At most four one-shot
-jobs are in flight because ScreenCaptureKit has been observed to serialize much of this work;
-higher concurrency inflates wall-clock time without improving throughput.
+requested windows' geometry before any image events. It then hands desktop-background and window
+screenshot jobs to `OneShotCaptureBatch`, which runs them through `BoundedAsyncBatch`. The
+wallpaper remains in this service so it reuses the same content lookup and participates in the
+same concurrency budget. At most four one-shot jobs are in flight because ScreenCaptureKit has
+been observed to serialize much of this work; higher concurrency inflates wall-clock time without
+improving throughput.
 
 The overlay requests window images with a maximum dimension of 320 pixels. Missing, denied,
 failed, or late images simply do not produce thumbnail events, so their existing placeholder
@@ -213,9 +214,10 @@ The spike programs under `spikes/` preserve the window-ID and hidden-capture exp
 ## Testing boundaries
 
 Pure tests cover CLI parsing, natural ordering, keyboard rules, layout normalization and
-validation, placeholders, frame-status filtering, frame coalescing, keyed delivery, and
-diagnostic calculations. Infrastructure tests cover subprocess output, exit handling, timeout,
-cancellation, and output limits.
+validation, placeholders, one-shot capture scheduling, session-validated capture-event
+application, frame-status filtering, frame coalescing, keyed delivery, and diagnostic
+calculations. Infrastructure tests cover subprocess output, exit handling, timeout, cancellation,
+and output limits.
 
 ScreenCaptureKit behavior, permissions, AppKit panel lifecycle, menu integration, and physical
 resource usage still require integration or manual testing on macOS. Tests should lock project

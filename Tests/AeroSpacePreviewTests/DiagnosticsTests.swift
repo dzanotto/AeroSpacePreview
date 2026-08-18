@@ -496,6 +496,94 @@ import Testing
         #expect(summary.contains("backlog 0/max 0, drops 0"))
     }
 
+    @Test func availableMetricsAndContributorsAreRendered() {
+        let snapshot = DiagnosticsSnapshot(
+            sessionDurationSeconds: 3.5,
+            capture: DiagnosticsCaptureSnapshot(
+                requestedWindowCount: 3,
+                streamsStarted: 2,
+                streamStartupFailures: 1,
+                statusCounts: .zero,
+                statusRates: DiagnosticsStatusRates(
+                    started: 1,
+                    complete: 2,
+                    idle: 3,
+                    blank: 4,
+                    suspended: 5,
+                    stopped: 6
+                ),
+                changedFrames: 12,
+                changedMegapixels: 4.5,
+                changedFramesPerSecond: 6,
+                changedMegapixelsPerSecond: 2.25,
+                firstLiveFrameLatencyMilliseconds: 125
+            ),
+            conversion: DiagnosticsConversionSnapshot(
+                framesEntered: 10,
+                successful: 9,
+                failed: 1,
+                duration: DiagnosticsDurationStatistics(
+                    averageMilliseconds: 2,
+                    p95Milliseconds: 7
+                ),
+                convertedMegapixels: 4,
+                convertedMegapixelsPerSecond: 2
+            ),
+            delivery: DiagnosticsDeliverySnapshot(
+                yieldedFrames: 9,
+                yieldedFramesPerSecond: 4.5,
+                uiDeliveredFrames: 8,
+                uiDeliveredFramesPerSecond: 4,
+                currentBacklog: 1,
+                maximumBacklog: 3,
+                droppedOrCoalescedFrames: 2
+            ),
+            latency: DiagnosticsLatencySnapshot(
+                windowServerToUIDelivery: DiagnosticsDurationStatistics(
+                    averageMilliseconds: 8,
+                    p95Milliseconds: 12
+                ),
+                callbackArrivalToUIDelivery: DiagnosticsDurationStatistics(
+                    averageMilliseconds: 3,
+                    p95Milliseconds: 5
+                )
+            ),
+            topContributor: DiagnosticsTopContributor(
+                windowID: 101,
+                label: "A very long editor window label for truncation",
+                framesPerSecond: 5,
+                megapixelsPerSecond: 1.5
+            ),
+            sessionTopContributor: DiagnosticsTopContributor(
+                windowID: 202,
+                label: "Browser",
+                framesPerSecond: 4,
+                megapixelsPerSecond: 2
+            ),
+            process: DiagnosticsProcessSnapshot(
+                currentCPUPercentage: 43,
+                averageCPUPercentage: 25,
+                peakCPUPercentage: 50,
+                physicalFootprintBytes: 32 * 1_048_576,
+                peakPhysicalFootprintBytes: 48 * 1_048_576,
+                packageIdleWakeupsPerSecond: 3.5
+            )
+        )
+
+        let text = DiagnosticsHUDFormatter.text(for: snapshot)
+        #expect(text.contains("2/3 streams  FAIL 1  FIRST 125 ms  CPU 43%  MEM 32 MB"))
+        #expect(text.contains("CONV  2.0/7.0 ms avg/p95"))
+        #expect(text.contains("LAG   WS 8.0/12.0 ms avg/p95  CB 3.0/5.0 ms avg/p95"))
+        #expect(text.contains("WAKE  3.5/s"))
+        #expect(text.contains("A very long editor window l…"))
+        #expect(!text.contains("A very long editor window label for truncation"))
+
+        let summary = DiagnosticsHUDFormatter.dismissalSummary(snapshot)
+        #expect(summary.contains("CPU avg 25%/peak 50%"))
+        #expect(summary.contains("memory peak 48 MB"))
+        #expect(summary.contains("top Browser 4.0 fps/2.0 MPix/s"))
+    }
+
     private var emptySnapshot: DiagnosticsSnapshot {
         DiagnosticsSnapshot(
             sessionDurationSeconds: 1,

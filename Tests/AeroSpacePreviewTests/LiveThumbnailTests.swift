@@ -160,6 +160,58 @@ import Testing
         delivery.finish()
     }
 
+    @Test func finishingDeliveryRemovesPendingFramesFromDiagnosticBacklog() async throws {
+        let diagnostics = CaptureDiagnostics()
+        diagnostics.prepareSummon(windowIDs: [101, 202])
+        let start = mach_absolute_time()
+        diagnostics.beginSession(windowLabels: [101: "Editor", 202: "Browser"], now: start)
+        let image = try #require(PlaceholderRenderer.render(
+            bundleID: "com.does.not.exist",
+            size: CGSize(width: 8, height: 8)
+        ))
+        let firstTiming = try #require(diagnostics.recordFrame(
+            windowID: 101,
+            status: .complete,
+            width: 8,
+            height: 8,
+            windowServerDisplayMachTime: nil
+        ))
+        let secondTiming = try #require(diagnostics.recordFrame(
+            windowID: 202,
+            status: .complete,
+            width: 8,
+            height: 8,
+            windowServerDisplayMachTime: nil
+        ))
+        let delivery = LiveFrameDelivery(diagnostics: diagnostics)
+        delivery.publish(LiveThumbnailFrame(
+            windowID: 101,
+            image: image,
+            diagnosticsTiming: firstTiming
+        ))
+        delivery.publish(LiveThumbnailFrame(
+            windowID: 202,
+            image: image,
+            diagnosticsTiming: secondTiming
+        ))
+
+        let beforeFinish = try #require(diagnostics.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(beforeFinish.delivery.currentBacklog == 2)
+
+        delivery.finish()
+
+        let afterFinish = try #require(diagnostics.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 2)
+        ))
+        #expect(afterFinish.delivery.yieldedFrames == 0)
+        #expect(afterFinish.delivery.currentBacklog == 0)
+        #expect(afterFinish.delivery.maximumBacklog == 2)
+        #expect(afterFinish.delivery.droppedOrCoalescedFrames == 0)
+        #expect(await delivery.next() == nil)
+    }
+
     @Test func coalescesToTheNewestPendingFrame() {
         let coalescer = LatestFrameCoalescer<Int>()
 

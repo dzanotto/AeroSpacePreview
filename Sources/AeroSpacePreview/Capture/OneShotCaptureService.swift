@@ -65,15 +65,15 @@ struct OneShotCaptureService: Sendable {
                 )
                 let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
 
-                continuation.yield(.frames(WindowFrameHarvest(
+                let frames = WindowFrameHarvest(
                     frames: Dictionary(uniqueKeysWithValues: targets.map { ($0.0, $0.1.value.frame) }),
                     displays: content.displays.map(\.frame)
-                )))
+                )
 
-                var jobs: [OneShotCaptureJob] = []
+                var jobs: [OneShotCaptureBatch.Job] = []
                 if let desktopDisplayID {
                     let boxedContent = UncheckedSendable(content)
-                    jobs.append(OneShotCaptureJob {
+                    jobs.append(OneShotCaptureBatch.Job {
                         let image = try? await withTimeout(timeout) {
                             await Self.captureDesktopBackground(
                                 from: boxedContent.value,
@@ -85,7 +85,7 @@ struct OneShotCaptureService: Sendable {
                     })
                 }
                 jobs.append(contentsOf: targets.map { id, boxed in
-                    OneShotCaptureJob {
+                    OneShotCaptureBatch.Job {
                         let image = try? await withTimeout(timeout) {
                             try await Self.capture(boxed.value, maxPixel: maxPixel)
                         }
@@ -93,18 +93,13 @@ struct OneShotCaptureService: Sendable {
                     }
                 })
 
-                let batch = BoundedAsyncBatch(
-                    elements: jobs,
+                let batch = OneShotCaptureBatch(
+                    frames: frames,
+                    jobs: jobs,
                     maximumConcurrentTasks: maximumConcurrentTasks,
-                    operation: { await $0.run() }
                 )
-                await batch.run { result in
-                    switch result {
-                    case .desktopBackground(let image):
-                        if let image { continuation.yield(.desktopBackground(image)) }
-                    case .thumbnail(let id, let image):
-                        if let image { continuation.yield(.thumbnail(id, image)) }
-                    }
+                await batch.run { event in
+                    continuation.yield(event)
                 }
             }
             continuation.onTermination = { _ in task.cancel() }
@@ -221,19 +216,6 @@ struct OneShotCaptureService: Sendable {
         config.ignoreShadowsSingleWindow = true
         return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
     }
-}
-
-private struct OneShotCaptureJob: Sendable {
-    let run: @Sendable () async -> OneShotCaptureResult
-
-    init(_ run: @escaping @Sendable () async -> OneShotCaptureResult) {
-        self.run = run
-    }
-}
-
-private enum OneShotCaptureResult: Sendable {
-    case desktopBackground(CGImage?)
-    case thumbnail(CGWindowID, CGImage?)
 }
 
 /// SCWindow and SCShareableContent are immutable snapshot handles but are not

@@ -94,12 +94,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
             }
 
             guard let stream else { return }
-            guard let captured = await self.consumeOneShotEvents(
+            guard let captured = await OverlayCaptureConsumer.consumeOneShotEvents(
                 stream,
                 content: content,
                 targetDisplayID: targetDisplayID,
                 viewModel: viewModel,
-                sessionID: sessionID
+                frameCache: self.frameCache,
+                isCurrent: {
+                    self.lifetime.isCurrent(sessionID, phase: .visible)
+                },
+                cacheDesktopBackground: { displayID, image in
+                    self.desktopBackgrounds[displayID] = image
+                }
             ) else { return }
             NSLog(
                 "AeroSpacePreview: summon — state %.0f ms, capture %.0f ms (%ld/%ld windows)",
@@ -128,66 +134,16 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 liveCapture.stop()
                 self.lifetime.releaseLiveCapture(liveCapture, for: sessionID)
             }
-            await self.consumeLiveFrames(
+            await OverlayCaptureConsumer.consumeLiveFrames(
                 liveCapture.frames,
                 viewModel: viewModel,
-                sessionID: sessionID
+                diagnostics: self.diagnostics,
+                isCurrent: {
+                    self.lifetime.isCurrent(sessionID, phase: .visible)
+                }
             )
         }
         lifetime.installCaptureTask(captureTask, for: sessionID)
-    }
-
-    private func consumeOneShotEvents(
-        _ stream: AsyncStream<CaptureEvent>,
-        content: OverlayContent,
-        targetDisplayID: CGDirectDisplayID?,
-        viewModel: OverlayViewModel,
-        sessionID: OverlayLifetime.SessionID
-    ) async -> Int? {
-        var captured = 0
-        for await event in stream {
-            guard !Task.isCancelled,
-                  lifetime.isCurrent(sessionID, phase: .visible)
-            else { return nil }
-            switch event {
-            case .frames(let harvest):
-                // The focused workspace is on screen right now, so its frames
-                // are real — cache them and upgrade its tile.
-                guard case .snapshot(let snapshot) = content,
-                      let focused = snapshot.focusedWorkspace else { break }
-                frameCache.store(
-                    workspace: focused.name,
-                    windowIDs: focused.windows.map(\.id),
-                    harvest: harvest
-                )
-                if let layout = frameCache.layout(for: focused) {
-                    viewModel.layouts[focused.name] = layout
-                }
-            case .desktopBackground(let image):
-                if let targetDisplayID {
-                    desktopBackgrounds[targetDisplayID] = image
-                }
-                viewModel.publishDesktopBackground(image)
-            case .thumbnail(let id, let image):
-                viewModel.thumbnails.update(image, for: id)
-                captured += 1
-            }
-        }
-        return captured
-    }
-
-    private func consumeLiveFrames(
-        _ frames: AsyncStream<LiveThumbnailFrame>,
-        viewModel: OverlayViewModel,
-        sessionID: OverlayLifetime.SessionID
-    ) async {
-        for await frame in frames {
-            guard !Task.isCancelled,
-                  lifetime.isCurrent(sessionID, phase: .visible)
-            else { return }
-            viewModel.thumbnails.update(frame.image, for: frame.windowID)
-            diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
-        }
     }
 
     func hide() {

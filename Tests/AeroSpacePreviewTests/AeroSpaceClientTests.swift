@@ -207,6 +207,29 @@ import Testing
         }
     }
 
+    @Test func cancellationRemainsCancellationAtTheClientBoundary() async throws {
+        let cli = try FakeAeroSpaceCLI(body: """
+        trap '' TERM
+        while :; do :; done
+        """)
+        let client = makeClient(for: cli)
+        let task = Task {
+            try await client.switchToWorkspace("dev")
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        task.cancel()
+
+        do {
+            try await task.value
+            Issue.record("Expected cancellation")
+        } catch is CancellationError {
+            // Cancellation must not be translated into a public command failure.
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
     private func makeClient(for cli: FakeAeroSpaceCLI) -> AeroSpaceClient {
         var client = AeroSpaceClient(cliPath: cli.executableURL.path)
         // Swift Testing runs suites concurrently; leave headroom for process

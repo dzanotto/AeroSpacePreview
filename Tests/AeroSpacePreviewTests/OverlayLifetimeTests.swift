@@ -93,6 +93,51 @@ import Testing
         #expect(liveStops.value == 1)
     }
 
+    @Test func releasingLiveCaptureUsesCaptureIdentity() throws {
+        let lifetime = OverlayLifetime()
+        let firstStops = LockedCounter()
+        let replacementStops = LockedCounter()
+        let sessionID = try #require(lifetime.beginLoading())
+        #expect(lifetime.markVisible(sessionID))
+
+        let first = LiveThumbnailCapture(
+            next: { nil },
+            stopOperation: { firstStops.increment() }
+        )
+        let replacement = LiveThumbnailCapture(
+            next: { nil },
+            stopOperation: { replacementStops.increment() }
+        )
+
+        #expect(lifetime.installLiveCapture(first, for: sessionID))
+        #expect(lifetime.installLiveCapture(replacement, for: sessionID))
+        #expect(firstStops.value == 1)
+
+        // Completion from the replaced capture must not release the current one.
+        withExtendedLifetime(replacement) {
+            lifetime.releaseLiveCapture(first, for: sessionID)
+            #expect(lifetime.beginHiding() == sessionID)
+            #expect(replacementStops.value == 1)
+            #expect(lifetime.finishHiding(sessionID))
+        }
+
+        let nextSessionID = try #require(lifetime.beginLoading())
+        #expect(lifetime.markVisible(nextSessionID))
+        let completed = LiveThumbnailCapture(
+            next: { nil },
+            stopOperation: { replacementStops.increment() }
+        )
+        #expect(lifetime.installLiveCapture(completed, for: nextSessionID))
+
+        // A naturally completed current capture no longer belongs to the lifetime.
+        withExtendedLifetime(completed) {
+            lifetime.releaseLiveCapture(completed, for: nextSessionID)
+            #expect(lifetime.beginHiding() == nextSessionID)
+            #expect(replacementStops.value == 1)
+            #expect(lifetime.finishHiding(nextSessionID))
+        }
+    }
+
     @Test func postActionWorkOutlivesDismissalButReplacementAndShutdownCancelIt() async throws {
         let lifetime = OverlayLifetime()
         let firstCancellations = LockedCounter()

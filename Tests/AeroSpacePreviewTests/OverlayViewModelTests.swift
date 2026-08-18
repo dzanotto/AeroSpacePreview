@@ -27,6 +27,18 @@ import Testing
         #expect(recorder.selectedWorkspaces.isEmpty)
     }
 
+    @Test func initialSelectionFallsBackToTheFirstWorkspace() {
+        let recorder = OverlayActionRecorder()
+        let viewModel = makeViewModel(
+            names: ["dev", "mail"],
+            focusedName: nil,
+            recorder: recorder
+        )
+
+        #expect(viewModel.selectedWorkspace == "dev")
+        #expect(viewModel.gridColumns == 2)
+    }
+
     @Test func arrowNavigationClearsTypingAndReturnActivatesTheSelection() {
         let recorder = OverlayActionRecorder()
         let viewModel = makeViewModel(
