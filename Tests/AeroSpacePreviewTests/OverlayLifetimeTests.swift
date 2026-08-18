@@ -93,15 +93,15 @@ import Testing
         #expect(liveStops.value == 1)
     }
 
-    @Test func harvestOutlivesDismissalButReplacementAndShutdownCancelIt() async throws {
+    @Test func postActionWorkOutlivesDismissalButReplacementAndShutdownCancelIt() async throws {
         let lifetime = OverlayLifetime()
         let firstCancellations = LockedCounter()
         let secondCancellations = LockedCounter()
         let first = cancellableTask(recordingWith: firstCancellations)
         let second = cancellableTask(recordingWith: secondCancellations)
 
-        lifetime.replaceHarvestTask(first)
-        lifetime.replaceHarvestTask(second)
+        lifetime.replacePostActionTask(first)
+        lifetime.replacePostActionTask(second)
         await first.value
         #expect(firstCancellations.value == 1)
 
@@ -142,14 +142,14 @@ import Testing
         }
     }
 
-    @Test func shutdownRejectsAHarvestInstalledByALateAction() async {
+    @Test func shutdownRejectsLatePostActionWork() async {
         let lifetime = OverlayLifetime()
         let cancellations = LockedCounter()
         lifetime.shutdown()
 
-        let lateHarvest = cancellableTask(recordingWith: cancellations)
-        lifetime.replaceHarvestTask(lateHarvest)
-        await lateHarvest.value
+        let lateWork = cancellableTask(recordingWith: cancellations)
+        lifetime.replacePostActionTask(lateWork)
+        await lateWork.value
 
         #expect(cancellations.value == 1)
     }

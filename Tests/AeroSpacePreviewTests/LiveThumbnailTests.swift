@@ -1,4 +1,5 @@
 import CoreGraphics
+import Darwin
 import os
 import ScreenCaptureKit
 import Testing
@@ -6,33 +7,33 @@ import Testing
 
 @Suite struct LiveThumbnailTests {
     @Test func liveStreamsUseScreenCaptureKitsMinimumQueueDepth() {
-        #expect(CaptureService.liveStreamQueueDepth == 3)
+        #expect(LiveThumbnailCoordinator.streamQueueDepth == 3)
     }
 
     @Test func publishesOnlyDisplayableChangedFrames() {
-        #expect(CaptureService.shouldPublish(frameStatus: .started))
-        #expect(CaptureService.shouldPublish(frameStatus: .complete))
-        #expect(!CaptureService.shouldPublish(frameStatus: .idle))
-        #expect(!CaptureService.shouldPublish(frameStatus: .blank))
-        #expect(!CaptureService.shouldPublish(frameStatus: .suspended))
-        #expect(!CaptureService.shouldPublish(frameStatus: .stopped))
+        #expect(LiveThumbnailCoordinator.shouldPublish(frameStatus: .started))
+        #expect(LiveThumbnailCoordinator.shouldPublish(frameStatus: .complete))
+        #expect(!LiveThumbnailCoordinator.shouldPublish(frameStatus: .idle))
+        #expect(!LiveThumbnailCoordinator.shouldPublish(frameStatus: .blank))
+        #expect(!LiveThumbnailCoordinator.shouldPublish(frameStatus: .suspended))
+        #expect(!LiveThumbnailCoordinator.shouldPublish(frameStatus: .stopped))
     }
 
     @Test func identifiesTheWallpaperWindowForItsDisplay() {
         let display = CGRect(x: 0, y: 0, width: 2560, height: 1440)
-        #expect(CaptureService.isWallpaperWindow(
+        #expect(OneShotCaptureService.isWallpaperWindow(
             bundleIdentifier: "com.apple.dock",
             title: "Wallpaper-",
             frame: display,
             displayFrame: display
         ))
-        #expect(!CaptureService.isWallpaperWindow(
+        #expect(!OneShotCaptureService.isWallpaperWindow(
             bundleIdentifier: "com.apple.finder",
             title: "Wallpaper-",
             frame: display,
             displayFrame: display
         ))
-        #expect(!CaptureService.isWallpaperWindow(
+        #expect(!OneShotCaptureService.isWallpaperWindow(
             bundleIdentifier: "com.apple.dock",
             title: "Wallpaper-",
             frame: display.offsetBy(dx: 2560, dy: 0),
@@ -107,6 +108,56 @@ import Testing
             image: image,
             diagnosticsTiming: nil
         ), for: 101).accepted)
+    }
+
+    @Test func liveDeliveryReplacesByWindowAndAccountsForTheReplacement() async throws {
+        let diagnostics = CaptureDiagnostics()
+        diagnostics.prepareSummon(windowIDs: [101])
+        let start = mach_absolute_time()
+        diagnostics.beginSession(windowLabels: [101: "Editor"], now: start)
+        let firstTiming = try #require(diagnostics.recordFrame(
+            windowID: 101,
+            status: .complete,
+            width: 8,
+            height: 8,
+            windowServerDisplayMachTime: nil
+        ))
+        let newestTiming = try #require(diagnostics.recordFrame(
+            windowID: 101,
+            status: .complete,
+            width: 16,
+            height: 16,
+            windowServerDisplayMachTime: nil
+        ))
+        let firstImage = try #require(PlaceholderRenderer.render(
+            bundleID: "com.does.not.exist",
+            size: CGSize(width: 8, height: 8)
+        ))
+        let newestImage = try #require(PlaceholderRenderer.render(
+            bundleID: "com.does.not.exist",
+            size: CGSize(width: 16, height: 16)
+        ))
+        let delivery = LiveFrameDelivery(diagnostics: diagnostics)
+
+        delivery.publish(LiveThumbnailFrame(
+            windowID: 101,
+            image: firstImage,
+            diagnosticsTiming: firstTiming
+        ))
+        delivery.publish(LiveThumbnailFrame(
+            windowID: 101,
+            image: newestImage,
+            diagnosticsTiming: newestTiming
+        ))
+
+        let snapshot = try #require(diagnostics.makeSnapshot(
+            now: start + DiagnosticsMachClock.ticks(seconds: 1)
+        ))
+        #expect(snapshot.delivery.yieldedFrames == 1)
+        #expect(snapshot.delivery.currentBacklog == 1)
+        #expect(snapshot.delivery.droppedOrCoalescedFrames == 1)
+        #expect(await delivery.next()?.image.width == 16)
+        delivery.finish()
     }
 
     @Test func coalescesToTheNewestPendingFrame() {

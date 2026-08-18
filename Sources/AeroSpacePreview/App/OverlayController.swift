@@ -9,7 +9,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var panel: OverlayPanel?
     private let lifetime = OverlayLifetime()
     private var client: AeroSpaceClient?
-    private let capture = CaptureService()
+    private let oneShotCapture = OneShotCaptureService()
+    private let liveThumbnails = LiveThumbnailCoordinator()
     private let frameCache = FrameCacheStore()
     private let diagnostics = CaptureDiagnostics()
     private let resourceSampler = ProcessResourceSampler()
@@ -59,7 +60,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         // captures start at the same moment and stream in one by one.
         // ScreenCaptureKit serializes much of this work, so placeholders
         // cover whatever has not arrived yet.
-        let captureTask = Task { [client, capture] in
+        let captureTask = Task { [client, oneShotCapture, liveThumbnails] in
             let clock = ContinuousClock()
             let start = clock.now
             let content = await Self.loadState(client: client)
@@ -72,7 +73,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
                 let windowIDs = snapshot.allWindowIDs
                 windowCount = windowIDs.count
-                stream = capture.captureStream(
+                stream = oneShotCapture.captureStream(
                     for: windowIDs,
                     maxPixel: 320,
                     desktopDisplayID: targetDisplayID
@@ -93,35 +94,13 @@ final class OverlayController: NSObject, NSWindowDelegate {
             }
 
             guard let stream else { return }
-            var captured = 0
-            for await event in stream {
-                guard !Task.isCancelled,
-                      self.lifetime.isCurrent(sessionID, phase: .visible)
-                else { return }
-                switch event {
-                case .frames(let harvest):
-                    // The focused workspace is on screen right now, so its
-                    // frames are real — cache them and upgrade its tile.
-                    guard case .snapshot(let snapshot) = content,
-                          let focused = snapshot.focusedWorkspace else { break }
-                    self.frameCache.store(
-                        workspace: focused.name,
-                        windowIDs: focused.windows.map(\.id),
-                        harvest: harvest
-                    )
-                    if let layout = self.frameCache.layout(for: focused) {
-                        viewModel.layouts[focused.name] = layout
-                    }
-                case .desktopBackground(let image):
-                    if let targetDisplayID {
-                        self.desktopBackgrounds[targetDisplayID] = image
-                    }
-                    viewModel.publishDesktopBackground(image)
-                case .thumbnail(let id, let image):
-                    viewModel.thumbnails.update(image, for: id)
-                    captured += 1
-                }
-            }
+            guard let captured = await self.consumeOneShotEvents(
+                stream,
+                content: content,
+                targetDisplayID: targetDisplayID,
+                viewModel: viewModel,
+                sessionID: sessionID
+            ) else { return }
             NSLog(
                 "AeroSpacePreview: summon — state %.0f ms, capture %.0f ms (%ld/%ld windows)",
                 start.duration(to: stateDone) / .milliseconds(1),
@@ -138,7 +117,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
                   !snapshot.permissionDenied,
                   !snapshot.allWindowIDs.isEmpty
             else { return }
-            let liveCapture = capture.startLiveThumbnailCapture(
+            let liveCapture = liveThumbnails.start(
                 for: snapshot.allWindowIDs,
                 maxPixel: 320,
                 framesPerSecond: 30,
@@ -149,15 +128,66 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 liveCapture.stop()
                 self.lifetime.releaseLiveCapture(liveCapture, for: sessionID)
             }
-            for await frame in liveCapture.frames {
-                guard !Task.isCancelled,
-                      self.lifetime.isCurrent(sessionID, phase: .visible)
-                else { return }
-                viewModel.thumbnails.update(frame.image, for: frame.windowID)
-                self.diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
-            }
+            await self.consumeLiveFrames(
+                liveCapture.frames,
+                viewModel: viewModel,
+                sessionID: sessionID
+            )
         }
         lifetime.installCaptureTask(captureTask, for: sessionID)
+    }
+
+    private func consumeOneShotEvents(
+        _ stream: AsyncStream<CaptureEvent>,
+        content: OverlayContent,
+        targetDisplayID: CGDirectDisplayID?,
+        viewModel: OverlayViewModel,
+        sessionID: OverlayLifetime.SessionID
+    ) async -> Int? {
+        var captured = 0
+        for await event in stream {
+            guard !Task.isCancelled,
+                  lifetime.isCurrent(sessionID, phase: .visible)
+            else { return nil }
+            switch event {
+            case .frames(let harvest):
+                // The focused workspace is on screen right now, so its frames
+                // are real — cache them and upgrade its tile.
+                guard case .snapshot(let snapshot) = content,
+                      let focused = snapshot.focusedWorkspace else { break }
+                frameCache.store(
+                    workspace: focused.name,
+                    windowIDs: focused.windows.map(\.id),
+                    harvest: harvest
+                )
+                if let layout = frameCache.layout(for: focused) {
+                    viewModel.layouts[focused.name] = layout
+                }
+            case .desktopBackground(let image):
+                if let targetDisplayID {
+                    desktopBackgrounds[targetDisplayID] = image
+                }
+                viewModel.publishDesktopBackground(image)
+            case .thumbnail(let id, let image):
+                viewModel.thumbnails.update(image, for: id)
+                captured += 1
+            }
+        }
+        return captured
+    }
+
+    private func consumeLiveFrames(
+        _ frames: AsyncStream<LiveThumbnailFrame>,
+        viewModel: OverlayViewModel,
+        sessionID: OverlayLifetime.SessionID
+    ) async {
+        for await frame in frames {
+            guard !Task.isCancelled,
+                  lifetime.isCurrent(sessionID, phase: .visible)
+            else { return }
+            viewModel.thumbnails.update(frame.image, for: frame.windowID)
+            diagnostics.recordUIDelivery(timing: frame.diagnosticsTiming)
+        }
     }
 
     func hide() {
@@ -324,28 +354,25 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private func perform(_ action: @escaping @Sendable (AeroSpaceClient) async throws -> Void) {
         hide()
         guard let client else { return }
-        Task(priority: .userInitiated) {
+        let postActionTask = Task(priority: .userInitiated) { [oneShotCapture, frameCache] in
             do {
                 try await action(client)
+            } catch is CancellationError {
+                return
             } catch {
                 NSLog("AeroSpacePreview: action failed: \(error)")
                 return
             }
-            self.scheduleFocusedWorkspaceHarvest()
-        }
-    }
-
-    /// An overlay action just revealed a workspace — once it settles, snapshot
-    /// its real window frames into the layout cache in the background. Normal
-    /// use of the app populates the cache by itself this way.
-    private func scheduleFocusedWorkspaceHarvest() {
-        guard let client, ScreenRecordingPermission.isGranted else { return }
-        let harvestTask = Task { [capture, frameCache] in
-            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, ScreenRecordingPermission.isGranted else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
             guard !Task.isCancelled,
                   let focused = try? await client.fetchFocusedWorkspaceWindows(),
                   !focused.windowIDs.isEmpty,
-                  let harvest = await capture.windowFrames(for: focused.windowIDs),
+                  let harvest = await oneShotCapture.windowFrames(for: focused.windowIDs),
                   !Task.isCancelled
             else { return }
             frameCache.store(
@@ -354,7 +381,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 harvest: harvest
             )
         }
-        lifetime.replaceHarvestTask(harvestTask)
+        lifetime.replacePostActionTask(postActionTask)
     }
 
     private func makePanel() -> OverlayPanel {

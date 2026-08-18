@@ -103,12 +103,12 @@ import Testing
 
 @Suite struct DiagnosticsCaptureTests {
     @Test func classifiesAllScreenCaptureKitStatuses() {
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .started) == .started)
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .complete) == .complete)
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .idle) == .idle)
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .blank) == .blank)
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .suspended) == .suspended)
-        #expect(CaptureService.diagnosticsStatus(frameStatus: .stopped) == .stopped)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .started) == .started)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .complete) == .complete)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .idle) == .idle)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .blank) == .blank)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .suspended) == .suspended)
+        #expect(LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: .stopped) == .stopped)
     }
 
     @Test func statusCounterKeepsEachClassificationSeparate() {

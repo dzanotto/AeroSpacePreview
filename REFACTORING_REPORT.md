@@ -27,14 +27,14 @@ Priorities:
 
 ## Summary
 
-The project is generally well-structured. Parsing, layout math, keyboard rules, and per-window thumbnail slots already have useful boundaries and focused tests. A broad rewrite is not recommended. The highest-value work is to bound live-frame delivery, improve subprocess execution and cancellation, and clarify capture/session lifecycle ownership.
+The project is generally well-structured. Parsing, layout math, keyboard rules, and per-window thumbnail slots already have useful boundaries and focused tests. A broad rewrite is not recommended. The highest-value infrastructure work—bounded live-frame delivery, asynchronous subprocess cleanup, capture timeout documentation, and capture/session lifecycle ownership—is complete.
 
 | ID | Priority | Status | Finding |
 |---|---|---|---|
 | R-01 | P1 | Resolved | Bound the live-frame stream |
 | R-02 | P1 | Resolved | Replace the synchronous subprocess runner |
 | R-03 | P1 | Resolved | Clarify or strengthen capture timeouts |
-| R-04 | P2 | Open | Split capture and overlay lifecycle responsibilities |
+| R-04 | P2 | Resolved | Split capture and overlay lifecycle responsibilities |
 | R-05 | P2 | Open | Handle large workspace counts |
 | R-06 | P2 | Open | Simplify debug-command startup |
 | R-07 | P2 | Open | Consolidate duplicate snapshot concepts |
@@ -83,16 +83,12 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 ### R-04 — Split capture and overlay lifecycle responsibilities
 
 - **Priority:** P2
-- **Status:** Open
+- **Status:** Resolved
 - **Area:** Architecture / maintainability
-- **Evidence:** `CaptureService.swift` owns one-shot capture, wallpaper capture, live-stream startup, image conversion, coalescing, timeout logic, and stream cleanup. `OverlayController` still coordinates panel presentation, AeroSpace state, capture consumption, layout caches, diagnostics, actions, and animation. R-12 introduced `OverlayLifetime`, which now models `idle`, `loading`, `visible`, and `hiding`, rejects stale session callbacks, owns per-session tasks, and cancels post-switch harvests at shutdown.
-- **Impact:** Capture infrastructure remains difficult to test independently, and the controller's summon flow still spans several responsibilities. The highest-risk lifecycle transitions and cleanup rules now have a deterministic boundary and focused coverage.
-- **Candidate direction:** Consider boundaries such as `OneShotWindowCapturer`, `DesktopBackgroundCapturer`, `LiveThumbnailCoordinator`, and `LiveStreamOutput`. Use the existing `OverlayLifetime` session boundary rather than introducing a second lifecycle abstraction.
-- **Questions to define:**
-  - Which split reduces complexity without creating protocol-heavy abstractions?
-  - Should more of the capture-and-publish workflow move behind the session boundary, or should the lifetime remain a narrow state/task owner?
-  - Should in-flight post-action AeroSpace commands also be explicitly cancelled during application shutdown?
-- **Resolution notes:** _Pending._
+- **Original evidence:** `CaptureService.swift` owned one-shot capture, wallpaper capture, live-stream startup, image conversion, coalescing, timeout logic, and stream cleanup. `OverlayController` coordinated panel presentation, AeroSpace state, capture consumption, layout caches, diagnostics, actions, and animation. Although R-12 had introduced a deterministic `OverlayLifetime`, the in-flight AeroSpace action preceding a post-switch harvest was not owned or cancelled at application shutdown.
+- **Decision:** Split only at cohesive concrete boundaries. Keep one-shot windows, wallpaper, geometry, and warm-up together because they share ScreenCaptureKit lookups and concurrency policy. Move live startup, conversion, delivery, and cleanup behind a concrete live-thumbnail coordinator. Keep `OverlayLifetime` as the sole overlay session state machine and keep UI publication in the controller. Own the complete post-action command-and-harvest workflow as one application task.
+- **Resolution notes:** `OneShotCaptureService` now owns the one-shot path, while `LiveThumbnailCoordinator` owns live-stream startup and returns the existing explicit `LiveThumbnailCapture` resource handle. `LiveStreamOutput`, `LiveFrameDelivery`, and `LiveStreamLifetime` are focused live-subsystem components rather than additional public services. `BoundedAsyncBatch` isolates the project-owned one-shot scheduling policy without protocols or fake ScreenCaptureKit objects. `OverlayController` delegates its two capture-consumption loops to focused private methods. `OverlayLifetime` replaces and cancels the entire post-action workflow, including an in-flight cancellation-aware AeroSpace command, while normal dismissal still allows that work to finish.
+- **Verification:** `make test` — 93 tests in 19 suites passed. New deterministic coverage verifies the one-shot concurrency bound, replenishment as work completes, queued-work rejection after cancellation, integrated live-frame replacement diagnostics, and post-action replacement/shutdown ownership.
 
 ### R-05 — Handle large workspace counts
 
@@ -208,9 +204,8 @@ The project is generally well-structured. Parsing, layout math, keyboard rules, 
 
 ## Suggested order of investigation
 
-1. R-04: simplify capture and controller responsibilities using the lifecycle seam.
-2. R-05 and R-08: address UI scalability and action semantics.
-3. R-06, R-07, R-09, and R-10: perform localized simplifications.
+1. R-05 and R-08: address UI scalability and action semantics.
+2. R-06, R-07, R-09, and R-10: perform localized simplifications.
 
 ## Resolution log
 
@@ -224,3 +219,4 @@ Add dated entries here when findings change status.
 | 2026-08-14 | R-03 | Resolved by documenting `SCScreenshotManager.captureImage` as non-cancellable and the 600 ms limit as best-effort while retaining structured cleanup | SDK and API-contract inspection; source documentation updated; no runtime behavior changed |
 | 2026-08-18 | R-11 | Consolidated current documentation, made code authoritative, and removed the obsolete specification and milestone plan | Repository-wide reference scan; `make test` — 61 tests in 15 suites passed |
 | 2026-08-18 | R-12 | Added an identity-based overlay lifecycle/task owner, stale-callback guards, shutdown-safe harvest ownership, and focused lifecycle tests | `make test` — 90 tests in 18 suites passed |
+| 2026-08-18 | R-04 | Split one-shot and live capture, isolated bounded one-shot scheduling, simplified controller consumption, and made the complete post-action workflow shutdown-owned | `make test` — 93 tests in 19 suites passed |

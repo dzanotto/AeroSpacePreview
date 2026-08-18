@@ -41,14 +41,14 @@ selected infrastructure boundaries.
 `HotKeyManager`, and `StatusItemController`. It also starts a ScreenCaptureKit warm-up task so
 the first overlay does not pay the full first-use cost.
 
-`OverlayController` is main-actor isolated. It owns the panel, AeroSpace client, capture
-service, frame cache, and diagnostics. `OverlayLifetime` models the active summon as `idle`,
-`loading`, `visible`, or `hiding` and owns its capture, live-stream, and diagnostics tasks.
-Opaque session IDs reject callbacks that arrive after dismissal or shutdown. Post-switch layout
-harvests deliberately outlive normal dismissal, but the same lifetime owner cancels them during
-application shutdown. `OverlayViewModel` owns per-summon presentation state. The SwiftUI layer
-renders that state and emits `OverlayActions`; it does not call the CLI or ScreenCaptureKit
-directly.
+`OverlayController` is main-actor isolated. It owns the panel, AeroSpace client, one-shot and
+live-thumbnail capture services, frame cache, and diagnostics. `OverlayLifetime` models the
+active summon as `idle`, `loading`, `visible`, or `hiding` and owns its capture, live-stream, and
+diagnostics tasks. Opaque session IDs reject callbacks that arrive after dismissal or shutdown.
+A successful workspace/window action and its post-switch layout harvest deliberately outlive
+normal dismissal as one application-owned task; replacement or application shutdown cancels the
+whole workflow. `OverlayViewModel` owns per-summon presentation state. The SwiftUI layer renders
+that state and emits `OverlayActions`; it does not call the CLI or ScreenCaptureKit directly.
 
 The rendered state deliberately has different update granularities:
 
@@ -78,8 +78,9 @@ Summoning follows this sequence:
    session identity prevents their late results from reaching a replacement view model.
 
 The panel dismisses on Escape, a backdrop click, loss of key status, a repeated toggle, or a
-workspace/window action. Actions dismiss first, invoke the CLI asynchronously, and schedule a
-layout harvest after the successful action.
+workspace/window action. Actions dismiss first, invoke the CLI asynchronously, and harvest the
+revealed layout after success. This complete post-action workflow survives ordinary dismissal
+but is cancelled when replaced or when the application exits.
 
 ## AeroSpace integration
 
@@ -108,11 +109,12 @@ Other nonzero exits remain command failures so unrelated server errors are not h
 
 ### One-shot pass
 
-`CaptureService.captureStream` performs one `SCShareableContent` lookup and yields the requested
-windows' geometry before any image events. It then uses a bounded task group for the desktop
-background and window screenshots. At most four one-shot window captures are in flight because
-ScreenCaptureKit has been observed to serialize much of this work; higher concurrency inflates
-wall-clock time without improving throughput.
+`OneShotCaptureService.captureStream` performs one `SCShareableContent` lookup and yields the
+requested windows' geometry before any image events. It then runs desktop-background and window
+screenshot jobs through `BoundedAsyncBatch`. The wallpaper remains in this service so it reuses
+the same content lookup and participates in the same concurrency budget. At most four one-shot
+jobs are in flight because ScreenCaptureKit has been observed to serialize much of this work;
+higher concurrency inflates wall-clock time without improving throughput.
 
 The overlay requests window images with a maximum dimension of 320 pixels. Missing, denied,
 failed, or late images simply do not produce thumbnail events, so their existing placeholder
@@ -126,9 +128,11 @@ completion handler runs. The overlay itself never waits for pixels before presen
 
 ### Live pass
 
-After the one-shot stream completes, the service attempts one desktop-independent `SCStream` per
-capturable window, configured for a maximum dimension of 320 pixels and up to 30 frames per
-second. The ScreenCaptureKit queue depth is its documented minimum of three.
+After the one-shot stream completes, `LiveThumbnailCoordinator` attempts one
+desktop-independent `SCStream` per capturable window, configured for a maximum dimension of 320
+pixels and up to 30 frames per second. The ScreenCaptureKit queue depth is its documented minimum
+of three. `LiveStreamOutput` is the concrete callback/conversion adapter; it is not a second
+capture service or lifecycle owner.
 
 Only `.started` and `.complete` frames are eligible for display. Idle, blank, suspended, stopped,
 invalid, or failed frames leave the last good still in place. Each window has a serial conversion

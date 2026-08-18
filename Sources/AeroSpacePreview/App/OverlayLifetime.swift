@@ -24,7 +24,7 @@ final class OverlayLifetime {
     private var captureTask: Task<Void, Never>?
     private var diagnosticsTask: Task<Void, Never>?
     private var liveCapture: LiveThumbnailCapture?
-    private var harvestTask: Task<Void, Never>?
+    private var postActionTask: Task<Void, Never>?
 
     func beginLoading() -> SessionID? {
         guard acceptsNewWork, phase == .idle else { return nil }
@@ -120,17 +120,16 @@ final class OverlayLifetime {
         diagnosticsTask = nil
     }
 
-    /// Layout harvests deliberately outlive normal overlay dismissal because
-    /// they inspect the workspace revealed by the action that dismissed it.
-    /// They remain application-owned and are cancelled only when replaced or
-    /// when the application shuts down.
-    func replaceHarvestTask(_ task: Task<Void, Never>) {
+    /// The action and its layout harvest deliberately outlive normal overlay
+    /// dismissal. They remain application-owned and are cancelled only when a
+    /// newer action replaces them or when the application shuts down.
+    func replacePostActionTask(_ task: Task<Void, Never>) {
         guard acceptsNewWork else {
             task.cancel()
             return
         }
-        harvestTask?.cancel()
-        harvestTask = task
+        postActionTask?.cancel()
+        postActionTask = task
     }
 
     func shutdown() {
@@ -141,8 +140,8 @@ final class OverlayLifetime {
         }
         currentSessionID = nil
         phase = .idle
-        harvestTask?.cancel()
-        harvestTask = nil
+        postActionTask?.cancel()
+        postActionTask = nil
     }
 
     private func stopCapture(for sessionID: SessionID) {

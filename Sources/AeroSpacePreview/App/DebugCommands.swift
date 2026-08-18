@@ -13,7 +13,7 @@ enum DumpImagesCommand {
             let windows = snapshot.allWindows
             try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
 
-            let service = CaptureService()
+            let service = OneShotCaptureService()
             await service.warmUp()
 
             let maxPixel = ProcessInfo.processInfo.environment["ASPV_MAXPIXEL"].flatMap(Int.init) ?? 640

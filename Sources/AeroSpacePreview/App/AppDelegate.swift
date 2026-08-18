@@ -32,7 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Pays the one-time SCK session cost (~370 ms) now instead of on the
         // first summon; also triggers the permission prompt on first run.
         Task.detached {
-            await CaptureService().warmUp()
+            await OneShotCaptureService().warmUp()
         }
 
         if CommandLine.arguments.contains("--show-on-launch") {
