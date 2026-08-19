@@ -102,9 +102,12 @@ The menu-bar item provides:
 ## Diagnostics and debug commands
 
 Diagnostics are off by default and remain available in release builds. Enable them from the menu
-or launch with `--debug-hud`. The HUD shows capture activity, conversion and delivery rates,
-backlog, latency, high-bandwidth windows, CPU, memory footprint, and idle wakeups. Each dismissal
-also writes a summary to NSLog; use `make dev` to keep logs visible.
+or launch with `--debug-hud`. The HUD follows changed frames through capture, image conversion,
+and UI delivery. It labels the current and peak delivery queue, dropped or coalesced frames,
+Window Server-to-UI and callback-to-UI latency, ScreenCaptureKit frame statuses, the busiest
+capture window, CPU, memory footprint, and idle wakeups. Timing distributions show their average
+and 95th percentile (`p95`). Each dismissal also writes a summary to NSLog; use `make dev` to keep
+logs visible.
 
 The executable accepts these development commands:
 

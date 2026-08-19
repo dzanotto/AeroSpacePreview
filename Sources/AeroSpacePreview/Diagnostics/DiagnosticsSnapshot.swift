@@ -157,24 +157,28 @@ enum DiagnosticsHUDFormatter {
         let first = milliseconds(capture.firstLiveFrameLatencyMilliseconds)
         let cpu = percentage(process.currentCPUPercentage)
         let memory = physicalFootprint(process.physicalFootprintBytes)
-        let conversionTiming = durationPair(conversion.duration)
-        let sourceLag = durationPair(snapshot.latency.windowServerToUIDelivery)
-        let callbackLag = durationPair(snapshot.latency.callbackArrivalToUIDelivery)
+        let conversionTiming = durationSummary(conversion.duration)
+        let sourceLag = durationSummary(snapshot.latency.windowServerToUIDelivery)
+        let callbackLag = durationSummary(snapshot.latency.callbackArrivalToUIDelivery)
         let wakeups = process.packageIdleWakeupsPerSecond.map { String(format: "%.1f/s", $0) } ?? "—"
         let top = snapshot.topContributor.map {
-            "\(concise($0.label)) · \(String(format: "%.1f", $0.framesPerSecond)) fps / "
-                + "\(String(format: "%.1f", $0.megapixelsPerSecond)) MPix/s"
+            "\(concise($0.label)) · \(String(format: "%.1f", $0.framesPerSecond)) frames/s · "
+                + "\(String(format: "%.1f", $0.megapixelsPerSecond)) megapixels/s"
         } ?? "—"
         let rates = capture.statusRates
 
         return [
-            "LIVE  \(capture.streamsStarted)/\(capture.requestedWindowCount) streams  FAIL \(capture.streamStartupFailures)  FIRST \(first)  CPU \(cpu)  MEM \(memory)",
-            String(format: "INPUT %.1f fps / %.1f MPix/s", capture.changedFramesPerSecond, capture.changedMegapixelsPerSecond),
-            String(format: "UI    %.1f fps  BACKLOG %llu / MAX %llu  DROP %llu", delivery.uiDeliveredFramesPerSecond, delivery.currentBacklog, delivery.maximumBacklog, delivery.droppedOrCoalescedFrames),
-            String(format: "CONV  %@  FAIL %llu / %llu  %.1f MPix/s", conversionTiming, conversion.failed, conversion.framesEntered, conversion.convertedMegapixelsPerSecond),
-            "LAG   WS \(sourceLag)  CB \(callbackLag)",
-            String(format: "STAT  S %.1f  C %.1f  I %.1f  B %.1f  SU %.1f  ST %.1f fps", rates.started, rates.complete, rates.idle, rates.blank, rates.suspended, rates.stopped),
-            "WAKE  \(wakeups)  TOP  \(top)",
+            "Streams                 \(capture.streamsStarted) of \(capture.requestedWindowCount) started · \(count(capture.streamStartupFailures, singular: "startup failure"))",
+            "First changed frame     \(first) after capture startup",
+            String(format: "Changed-frame input     %.1f frames/s · %.1f megapixels/s", capture.changedFramesPerSecond, capture.changedMegapixelsPerSecond),
+            String(format: "UI delivery             %.1f frames/s · %llu pending (peak %llu) · %llu dropped/coalesced total", delivery.uiDeliveredFramesPerSecond, delivery.currentBacklog, delivery.maximumBacklog, delivery.droppedOrCoalescedFrames),
+            String(format: "Image conversion        %@ · %llu of %llu failed · %.1f megapixels/s", conversionTiming, conversion.failed, conversion.framesEntered, conversion.convertedMegapixelsPerSecond),
+            "Window Server → UI      \(sourceLag)",
+            "Capture callback → UI   \(callbackLag)",
+            String(format: "Frame status rates      started %.1f/s · complete %.1f/s · idle %.1f/s", rates.started, rates.complete, rates.idle),
+            String(format: "                        blank %.1f/s · suspended %.1f/s · stopped %.1f/s", rates.blank, rates.suspended, rates.stopped),
+            "Process                 CPU \(cpu) · memory \(memory) · idle wakeups \(wakeups)",
+            "Busiest capture window  \(top)",
         ].joined(separator: "\n")
     }
 
@@ -182,10 +186,10 @@ enum DiagnosticsHUDFormatter {
         let capture = snapshot.capture
         let delivery = snapshot.delivery
         let top = snapshot.sessionTopContributor.map {
-            "\($0.label) \(String(format: "%.1f", $0.framesPerSecond)) fps/\(String(format: "%.1f", $0.megapixelsPerSecond)) MPix/s"
+            "\($0.label) \(String(format: "%.1f", $0.framesPerSecond)) frames/s, \(String(format: "%.1f", $0.megapixelsPerSecond)) megapixels/s"
         } ?? "n/a"
         return String(
-            format: "AeroSpacePreview: diagnostics — %.1f s; streams %d/%d, failures %d; input %llu frames/%.1f MPix; UI %llu; backlog %llu/max %llu, drops %llu; conversion %@; pipeline lag %@; CPU avg %@/peak %@; memory peak %@; top %@",
+            format: "AeroSpacePreview: diagnostics — %.1f s; streams started %d/%d, startup failures %d; changed-frame input %llu frames/%.1f megapixels; UI deliveries %llu; pending %llu (peak %llu), dropped/coalesced %llu; image conversion %@; Window Server-to-UI latency %@; capture-callback-to-UI latency %@; CPU average %@, peak %@; peak memory %@; busiest capture window %@",
             snapshot.sessionDurationSeconds,
             capture.streamsStarted,
             capture.requestedWindowCount,
@@ -196,11 +200,9 @@ enum DiagnosticsHUDFormatter {
             delivery.currentBacklog,
             delivery.maximumBacklog,
             delivery.droppedOrCoalescedFrames,
-            durationPair(snapshot.conversion.duration),
-            durationPair(
-                snapshot.latency.windowServerToUIDelivery
-                    ?? snapshot.latency.callbackArrivalToUIDelivery
-            ),
+            durationSummary(snapshot.conversion.duration),
+            durationSummary(snapshot.latency.windowServerToUIDelivery),
+            durationSummary(snapshot.latency.callbackArrivalToUIDelivery),
             percentage(snapshot.process.averageCPUPercentage),
             percentage(snapshot.process.peakCPUPercentage),
             physicalFootprint(snapshot.process.peakPhysicalFootprintBytes),
@@ -208,10 +210,10 @@ enum DiagnosticsHUDFormatter {
         )
     }
 
-    private static func durationPair(_ statistics: DiagnosticsDurationStatistics?) -> String {
+    private static func durationSummary(_ statistics: DiagnosticsDurationStatistics?) -> String {
         guard let statistics else { return "—" }
         return String(
-            format: "%.1f/%.1f ms avg/p95",
+            format: "avg %.1f ms · p95 %.1f ms",
             statistics.averageMilliseconds,
             statistics.p95Milliseconds
         )
@@ -225,6 +227,10 @@ enum DiagnosticsHUDFormatter {
     private static func percentage(_ value: Double?) -> String {
         guard let value else { return "—" }
         return String(format: "%.0f%%", value)
+    }
+
+    private static func count(_ value: Int, singular: String) -> String {
+        "\(value) \(singular)\(value == 1 ? "" : "s")"
     }
 
     private static func concise(_ label: String) -> String {

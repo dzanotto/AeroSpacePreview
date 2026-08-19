@@ -485,15 +485,17 @@ import Testing
 @Suite struct DiagnosticsHUDFormattingTests {
     @Test func unavailableOptionalMetricsUseStablePlaceholders() {
         let text = DiagnosticsHUDFormatter.text(for: emptySnapshot)
-        #expect(text.contains("FIRST —"))
-        #expect(text.contains("CPU —"))
-        #expect(text.contains("MEM —"))
-        #expect(text.contains("LAG   WS —  CB —"))
-        #expect(text.contains("TOP  —"))
+        #expect(text.contains("Streams                 0 of 0 started · 0 startup failures"))
+        #expect(text.contains("First changed frame     — after capture startup"))
+        #expect(text.contains("Window Server → UI      —"))
+        #expect(text.contains("Capture callback → UI   —"))
+        #expect(text.contains("Process                 CPU — · memory — · idle wakeups —"))
+        #expect(text.contains("Busiest capture window  —"))
         #expect(!text.contains("presented"))
 
         let summary = DiagnosticsHUDFormatter.dismissalSummary(emptySnapshot)
-        #expect(summary.contains("backlog 0/max 0, drops 0"))
+        #expect(summary.contains("pending 0 (peak 0), dropped/coalesced 0"))
+        #expect(summary.contains("Window Server-to-UI latency —; capture-callback-to-UI latency —"))
     }
 
     @Test func availableMetricsAndContributorsAreRendered() {
@@ -571,17 +573,25 @@ import Testing
         )
 
         let text = DiagnosticsHUDFormatter.text(for: snapshot)
-        #expect(text.contains("2/3 streams  FAIL 1  FIRST 125 ms  CPU 43%  MEM 32 MB"))
-        #expect(text.contains("CONV  2.0/7.0 ms avg/p95"))
-        #expect(text.contains("LAG   WS 8.0/12.0 ms avg/p95  CB 3.0/5.0 ms avg/p95"))
-        #expect(text.contains("WAKE  3.5/s"))
+        #expect(text.contains("Streams                 2 of 3 started · 1 startup failure"))
+        #expect(text.contains("First changed frame     125 ms after capture startup"))
+        #expect(text.contains("Changed-frame input     6.0 frames/s · 2.2 megapixels/s"))
+        #expect(text.contains("UI delivery             4.0 frames/s · 1 pending (peak 3) · 2 dropped/coalesced total"))
+        #expect(text.contains("Image conversion        avg 2.0 ms · p95 7.0 ms · 1 of 10 failed · 2.0 megapixels/s"))
+        #expect(text.contains("Window Server → UI      avg 8.0 ms · p95 12.0 ms"))
+        #expect(text.contains("Capture callback → UI   avg 3.0 ms · p95 5.0 ms"))
+        #expect(text.contains("Frame status rates      started 1.0/s · complete 2.0/s · idle 3.0/s"))
+        #expect(text.contains("blank 4.0/s · suspended 5.0/s · stopped 6.0/s"))
+        #expect(text.contains("Process                 CPU 43% · memory 32 MB · idle wakeups 3.5/s"))
         #expect(text.contains("A very long editor window l…"))
         #expect(!text.contains("A very long editor window label for truncation"))
 
         let summary = DiagnosticsHUDFormatter.dismissalSummary(snapshot)
-        #expect(summary.contains("CPU avg 25%/peak 50%"))
-        #expect(summary.contains("memory peak 48 MB"))
-        #expect(summary.contains("top Browser 4.0 fps/2.0 MPix/s"))
+        #expect(summary.contains("Window Server-to-UI latency avg 8.0 ms · p95 12.0 ms"))
+        #expect(summary.contains("capture-callback-to-UI latency avg 3.0 ms · p95 5.0 ms"))
+        #expect(summary.contains("CPU average 25%, peak 50%"))
+        #expect(summary.contains("peak memory 48 MB"))
+        #expect(summary.contains("busiest capture window Browser 4.0 frames/s, 2.0 megapixels/s"))
     }
 
     private var emptySnapshot: DiagnosticsSnapshot {

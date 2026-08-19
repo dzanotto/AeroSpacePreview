@@ -189,9 +189,11 @@ displays.
 ## Diagnostics
 
 Diagnostics are opt-in for each application session. The HUD samples at 2 Hz and reports stream
-status, conversion and delivery rates, backlog, dropped/coalesced frames, latency, top window
-bandwidth, CPU, physical memory footprint, and idle wakeups. Delivery latency ends at the
-`ThumbnailStore`; it does not claim to measure physical display presentation.
+status, changed-frame capture input, image conversion, UI delivery, the current and peak delivery
+queue, dropped/coalesced frames, top window bandwidth, CPU, physical memory footprint, and idle
+wakeups. Timing distributions identify their average and 95th percentile. The two latency rows
+distinguish Window Server-to-UI delivery from in-process capture-callback-to-UI delivery. Both end
+at the `ThumbnailStore`; neither claims to measure physical display presentation.
 
 The diagnostics subsystem is designed to stay off the hot path when disabled. When enabled, the
 controller owns its sampling task and publishes one immutable diagnostics snapshot to the UI on
