@@ -5,6 +5,8 @@ import Foundation
 import ScreenCaptureKit
 
 final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    typealias ImageConverter = @Sendable (_ pixelBuffer: CVPixelBuffer, _ bounds: CGRect) -> CGImage?
+
     private static let imageContext = CIContext(options: [.cacheIntermediates: false])
 
     /// ScreenCaptureKit intake stays unblocked while the separate serial
@@ -14,16 +16,19 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
     private let windowID: CGWindowID
     private let delivery: LiveFrameDelivery
     private let diagnostics: CaptureDiagnostics?
+    private let imageConverter: ImageConverter
     private let frameCoalescer = LatestFrameCoalescer<PendingLiveFrame>()
 
     init(
         windowID: CGWindowID,
         delivery: LiveFrameDelivery,
-        diagnostics: CaptureDiagnostics?
+        diagnostics: CaptureDiagnostics?,
+        imageConverter: @escaping ImageConverter = LiveStreamOutput.convert
     ) {
         self.windowID = windowID
         self.delivery = delivery
         self.diagnostics = diagnostics
+        self.imageConverter = imageConverter
         queue = DispatchQueue(
             label: "com.dariozanotto.aerospacepreview.live-capture.\(windowID)",
             qos: .userInteractive
@@ -45,6 +50,18 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
               let status = Self.frameStatus(in: attachments)
         else { return }
 
+        process(
+            frameStatus: status,
+            pixelBuffer: sampleBuffer.imageBuffer,
+            displayTime: Self.displayTime(in: attachments)
+        )
+    }
+
+    func process(
+        frameStatus status: SCFrameStatus,
+        pixelBuffer: CVPixelBuffer?,
+        displayTime: UInt64?
+    ) {
         guard LiveThumbnailCoordinator.shouldPublish(frameStatus: status) else {
             if let diagnosticsStatus = LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: status) {
                 _ = diagnostics?.recordFrame(
@@ -58,7 +75,6 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
             return
         }
 
-        let pixelBuffer = sampleBuffer.imageBuffer
         let width = pixelBuffer.map { CVPixelBufferGetWidth($0) }
         let height = pixelBuffer.map { CVPixelBufferGetHeight($0) }
         let timing = LiveThumbnailCoordinator.diagnosticsStatus(frameStatus: status).flatMap {
@@ -68,7 +84,7 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
                 status: diagnosticsStatus,
                 width: width,
                 height: height,
-                windowServerDisplayMachTime: Self.displayTime(in: attachments)
+                windowServerDisplayMachTime: displayTime
             )
         }
         guard let pixelBuffer, let width, let height else { return }
@@ -111,10 +127,7 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         let conversionToken = frame.diagnosticsTiming.flatMap {
             diagnostics?.beginConversion(timing: $0)
         }
-        let image = Self.imageContext.createCGImage(
-            CIImage(cvPixelBuffer: frame.pixelBuffer),
-            from: bounds
-        )
+        let image = imageConverter(frame.pixelBuffer, bounds)
         if let conversionToken {
             diagnostics?.endConversion(
                 conversionToken,
@@ -152,14 +165,18 @@ final class LiveStreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unche
         return first
     }
 
-    private static func frameStatus(in attachments: [SCStreamFrameInfo: Any]) -> SCFrameStatus? {
+    static func frameStatus(in attachments: [SCStreamFrameInfo: Any]) -> SCFrameStatus? {
         guard let rawValue = attachments[.status] as? Int else { return nil }
         return SCFrameStatus(rawValue: rawValue)
     }
 
-    private static func displayTime(in attachments: [SCStreamFrameInfo: Any]) -> UInt64? {
+    static func displayTime(in attachments: [SCStreamFrameInfo: Any]) -> UInt64? {
         if let value = attachments[.displayTime] as? UInt64 { return value }
         return (attachments[.displayTime] as? NSNumber)?.uint64Value
+    }
+
+    private static func convert(_ pixelBuffer: CVPixelBuffer, _ bounds: CGRect) -> CGImage? {
+        imageContext.createCGImage(CIImage(cvPixelBuffer: pixelBuffer), from: bounds)
     }
 }
 

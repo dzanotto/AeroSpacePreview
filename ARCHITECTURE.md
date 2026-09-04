@@ -117,7 +117,9 @@ screenshot jobs to `OneShotCaptureBatch`, which runs them through `BoundedAsyncB
 wallpaper remains in this service so it reuses the same content lookup and participates in the
 same concurrency budget. At most four one-shot jobs are in flight because ScreenCaptureKit has
 been observed to serialize much of this work; higher concurrency inflates wall-clock time without
-improving throughput.
+improving throughput. `OneShotCaptureSource` isolates the concrete ScreenCaptureKit lookup and
+capture calls from this scheduling and event-ordering logic so those project-owned semantics can
+be tested without Screen Recording permission or live windows.
 
 The overlay requests window images with a maximum dimension of 320 pixels. Missing, denied,
 failed, or late images simply do not produce thumbnail events, so their existing placeholder
@@ -134,8 +136,9 @@ completion handler runs. The overlay itself never waits for pixels before presen
 After the one-shot stream completes, `LiveThumbnailCoordinator` attempts one
 desktop-independent `SCStream` per capturable window, configured for a maximum dimension of 320
 pixels and up to 30 frames per second. The ScreenCaptureKit queue depth is its documented minimum
-of three. `LiveStreamOutput` is the concrete callback/conversion adapter; it is not a second
-capture service or lifecycle owner.
+of three. Target discovery and startup have an injected test boundary; production supplies the
+ScreenCaptureKit implementation. `LiveStreamOutput` is the concrete callback/conversion adapter;
+it is not a second capture service or lifecycle owner.
 
 Only `.started` and `.complete` frames are eligible for display. Idle, blank, suspended, stopped,
 invalid, or failed frames leave the last good still in place. Each window has a serial conversion
@@ -220,11 +223,13 @@ The spike programs under `spikes/` preserve the window-ID and hidden-capture exp
 ## Testing boundaries
 
 Pure tests cover CLI parsing, natural ordering, keyboard rules, layout normalization and
-validation, placeholders, one-shot capture scheduling, session-validated capture-event
-application, frame-status filtering, frame coalescing, keyed delivery, and diagnostic
+validation, placeholders, one-shot capture scheduling and service orchestration,
+session-validated capture-event application, live-stream partial startup and cancellation,
+frame-status filtering, callback conversion and coalescing, keyed delivery, and diagnostic
 calculations. Infrastructure tests cover subprocess output, exit handling, timeout, cancellation,
 and output limits.
 
-ScreenCaptureKit behavior, permissions, AppKit panel lifecycle, menu integration, and physical
-resource usage still require integration or manual testing on macOS. Tests should lock project
-semantics without claiming guarantees that the public ScreenCaptureKit API does not make.
+The concrete ScreenCaptureKit adapters, permissions, AppKit panel lifecycle, menu integration,
+and physical resource usage still require integration or manual testing on macOS. Tests should
+lock project semantics without claiming guarantees that the public ScreenCaptureKit API does not
+make.

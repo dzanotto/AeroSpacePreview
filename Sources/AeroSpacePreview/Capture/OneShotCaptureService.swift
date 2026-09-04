@@ -1,5 +1,4 @@
 import CoreGraphics
-import ScreenCaptureKit
 
 /// Window frames + display bounds from one SCShareableContent lookup, in
 /// global top-left-origin coordinates: the raw material for layout caching.
@@ -37,6 +36,17 @@ struct OneShotCaptureService: Sendable {
     /// mean "this window is slow", not "the queue is long" — and costs no
     /// throughput, since SCK serializes anyway (~30 ms/window regardless).
     var maxConcurrentCaptures = 4
+    private let source: OneShotCaptureSource
+
+    init(
+        perWindowTimeout: Duration = .milliseconds(600),
+        maxConcurrentCaptures: Int = 4,
+        source: OneShotCaptureSource = .screenCaptureKit
+    ) {
+        self.perWindowTimeout = perWindowTimeout
+        self.maxConcurrentCaptures = maxConcurrentCaptures
+        self.source = source
+    }
 
     /// Captures a downscaled frame of each requested window concurrently,
     /// yielding each thumbnail as soon as its capture completes (captures
@@ -57,29 +67,26 @@ struct OneShotCaptureService: Sendable {
         return AsyncStream { continuation in
             let task = Task {
                 defer { continuation.finish() }
-                guard let content = try? await SCShareableContent
-                    .excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return }
+                guard let content = try? await source.load(false, false) else { return }
                 let scWindows = Dictionary(
-                    content.windows.map { ($0.windowID, UncheckedSendable($0)) },
+                    content.windows.map { ($0.id, $0) },
                     uniquingKeysWith: { first, _ in first }
                 )
                 let targets = windowIDs.compactMap { id in scWindows[id].map { (id, $0) } }
 
                 let frames = WindowFrameHarvest(
-                    frames: Dictionary(uniqueKeysWithValues: targets.map { ($0.0, $0.1.value.frame) }),
-                    displays: content.displays.map(\.frame)
+                    frames: Dictionary(
+                        targets.map { ($0.0, $0.1.frame) },
+                        uniquingKeysWith: { first, _ in first }
+                    ),
+                    displays: content.displayFrames
                 )
 
                 var jobs: [OneShotCaptureBatch.Job] = []
                 if let desktopDisplayID {
-                    let boxedContent = UncheckedSendable(content)
                     jobs.append(OneShotCaptureBatch.Job {
                         let image = try? await withTimeout(timeout) {
-                            await Self.captureDesktopBackground(
-                                from: boxedContent.value,
-                                displayID: desktopDisplayID,
-                                maxPixel: desktopMaxPixel
-                            )
+                            await content.captureDesktop(desktopDisplayID, desktopMaxPixel)
                         }
                         return .desktopBackground(image)
                     })
@@ -87,7 +94,7 @@ struct OneShotCaptureService: Sendable {
                 jobs.append(contentsOf: targets.map { id, boxed in
                     OneShotCaptureBatch.Job {
                         let image = try? await withTimeout(timeout) {
-                            try await Self.capture(boxed.value, maxPixel: maxPixel)
+                            try await boxed.capture(maxPixel)
                         }
                         return .thumbnail(id, image)
                     }
@@ -119,24 +126,22 @@ struct OneShotCaptureService: Sendable {
     /// by the post-switch background harvest, which needs the newly visible
     /// workspace's window frames but no thumbnails.
     func windowFrames(for windowIDs: [CGWindowID]) async -> WindowFrameHarvest? {
-        guard let content = try? await SCShareableContent
-            .excludingDesktopWindows(false, onScreenWindowsOnly: false) else { return nil }
+        guard let content = try? await source.load(false, false) else { return nil }
         let wanted = Set(windowIDs)
         var frames: [CGWindowID: CGRect] = [:]
-        for window in content.windows where wanted.contains(window.windowID) {
-            frames[window.windowID] = window.frame
+        for window in content.windows where wanted.contains(window.id) {
+            frames[window.id] = window.frame
         }
-        return WindowFrameHarvest(frames: frames, displays: content.displays.map(\.frame))
+        return WindowFrameHarvest(frames: frames, displays: content.displayFrames)
     }
 
     /// The first ScreenCaptureKit capture of a process pays a ~370 ms session
     /// warm-up; do it at launch so the first summon does not pay it.
     /// On first run this also triggers the Screen Recording permission prompt.
     func warmUp() async {
-        guard let content = try? await SCShareableContent
-            .excludingDesktopWindows(true, onScreenWindowsOnly: true),
+        guard let content = try? await source.load(true, true),
             let window = content.windows.first else { return }
-        _ = try? await Self.capture(window, maxPixel: 8)
+        _ = try? await window.capture(8)
     }
 
     /// Wallpaper is exposed as a full-display Dock window on current macOS.
@@ -157,72 +162,6 @@ struct OneShotCaptureService: Sendable {
             && abs(frame.width - displayFrame.width) <= tolerance
             && abs(frame.height - displayFrame.height) <= tolerance
     }
-
-    private static func captureDesktopBackground(
-        from content: SCShareableContent,
-        displayID: CGDirectDisplayID,
-        maxPixel: Int
-    ) async -> CGImage? {
-        guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
-            return nil
-        }
-        if let wallpaper = content.windows.first(where: {
-            isWallpaperWindow(
-                bundleIdentifier: $0.owningApplication?.bundleIdentifier,
-                title: $0.title,
-                frame: $0.frame,
-                displayFrame: display.frame
-            )
-        }) {
-            return try? await capture(wallpaper, maxPixel: maxPixel)
-        }
-
-        // A display-excluding filter always retains the rendered desktop.
-        // Asking for content without desktop windows means the exclusion list
-        // removes applications (including our panel), but not the wallpaper.
-        guard let visibleContent = try? await SCShareableContent
-            .excludingDesktopWindows(true, onScreenWindowsOnly: true),
-              let visibleDisplay = visibleContent.displays.first(where: { $0.displayID == displayID })
-        else { return nil }
-
-        let filter = SCContentFilter(
-            display: visibleDisplay,
-            excludingWindows: visibleContent.windows
-        )
-        if #available(macOS 14.2, *) {
-            filter.includeMenuBar = false
-        }
-        let config = SCStreamConfiguration()
-        let width = CGFloat(visibleDisplay.width)
-        let height = CGFloat(visibleDisplay.height)
-        let scale = min(1.0, CGFloat(maxPixel) / max(width, height, 1))
-        config.width = max(1, Int(width * scale))
-        config.height = max(1, Int(height * scale))
-        config.showsCursor = false
-        return try? await SCScreenshotManager.captureImage(
-            contentFilter: filter,
-            configuration: config
-        )
-    }
-
-    private static func capture(_ window: SCWindow, maxPixel: Int) async throws -> CGImage {
-        let filter = SCContentFilter(desktopIndependentWindow: window)
-        let config = SCStreamConfiguration()
-        let size = window.frame.size
-        let scale = min(1.0, CGFloat(maxPixel) / max(size.width, size.height, 1))
-        config.width = max(1, Int(size.width * scale))
-        config.height = max(1, Int(size.height * scale))
-        config.showsCursor = false
-        config.ignoreShadowsSingleWindow = true
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
-    }
-}
-
-/// SCWindow and SCShareableContent are immutable snapshot handles but are not
-/// marked Sendable by ScreenCaptureKit.
-private struct UncheckedSendable<T>: @unchecked Sendable {
-    let value: T
-    init(_ value: T) { self.value = value }
 }
 
 private struct TimeoutError: Error {}

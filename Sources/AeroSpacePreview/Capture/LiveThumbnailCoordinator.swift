@@ -6,8 +6,32 @@ import ScreenCaptureKit
 /// Starts and owns the ScreenCaptureKit streams that supply change-aware live
 /// thumbnails for one overlay summon.
 struct LiveThumbnailCoordinator: Sendable {
+    typealias StopOperation = @Sendable () async -> Void
+
+    struct Target: Sendable {
+        let windowID: CGWindowID
+        let start: @Sendable (
+            _ maxPixel: Int,
+            _ framesPerSecond: Int,
+            _ delivery: LiveFrameDelivery,
+            _ diagnostics: CaptureDiagnostics?
+        ) async throws -> StopOperation
+    }
+
     /// ScreenCaptureKit's documented minimum queue depth.
     static let streamQueueDepth = 3
+
+    private let loadTargets: @Sendable (Set<CGWindowID>) async throws -> [Target]
+
+    init() {
+        loadTargets = Self.loadScreenCaptureKitTargets
+    }
+
+    init(
+        loadTargets: @escaping @Sendable (Set<CGWindowID>) async throws -> [Target]
+    ) {
+        self.loadTargets = loadTargets
+    }
 
     /// Keeps one change-aware ScreenCaptureKit stream open per window. SCK
     /// emits complete frames when pixels change and idle frames otherwise;
@@ -25,33 +49,30 @@ struct LiveThumbnailCoordinator: Sendable {
             defer { delivery.finish() }
             guard !windowIDs.isEmpty else { return }
             let startupToken = diagnostics?.beginLiveStreamStartup()
-            guard let content = try? await SCShareableContent
-                .excludingDesktopWindows(false, onScreenWindowsOnly: false)
-            else {
+            let targets: [Target]
+            do {
+                targets = try await loadTargets(Set(windowIDs))
+            } catch {
                 if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
                 return
             }
 
-            let wanted = Set(windowIDs)
-            let targets = content.windows.filter { wanted.contains($0.windowID) }
-            let handles = await withTaskGroup(
-                of: LiveStreamHandle?.self,
-                returning: [LiveStreamHandle].self
+            let stopOperations = await withTaskGroup(
+                of: StopOperation?.self,
+                returning: [StopOperation].self
             ) { group in
-                for window in targets {
-                    let windowID = window.windowID
-                    let boxed = UncheckedLiveWindow(window)
+                for target in targets {
+                    let windowID = target.windowID
                     group.addTask {
                         do {
-                            let handle = try await Self.startStream(
-                                for: boxed.value,
-                                maxPixel: maxPixel,
-                                framesPerSecond: framesPerSecond,
-                                delivery: delivery,
-                                diagnostics: diagnostics
+                            let stop = try await target.start(
+                                maxPixel,
+                                framesPerSecond,
+                                delivery,
+                                diagnostics
                             )
                             diagnostics?.recordStreamStarted(windowID: windowID)
-                            return handle
+                            return stop
                         } catch {
                             diagnostics?.recordStreamStartupFailure(windowID: windowID)
                             NSLog(
@@ -64,29 +85,24 @@ struct LiveThumbnailCoordinator: Sendable {
                     }
                 }
 
-                var result: [LiveStreamHandle] = []
-                for await handle in group {
-                    if let handle { result.append(handle) }
+                var result: [StopOperation] = []
+                for await stop in group {
+                    if let stop { result.append(stop) }
                 }
                 return result
             }
             if let startupToken { diagnostics?.endLiveStreamStartup(startupToken) }
 
-            await lifetime.install(handles.map { handle in
-                {
-                    handle.output.stop()
-                    try? await handle.stream.stopCapture()
-                }
-            })
+            await lifetime.install(stopOperations)
 
-            guard !handles.isEmpty, !Task.isCancelled else {
+            guard !stopOperations.isEmpty, !Task.isCancelled else {
                 await lifetime.stop()
                 return
             }
 
             NSLog(
                 "AeroSpacePreview: live capture — %ld/%ld streams at up to %ld fps",
-                handles.count,
+                stopOperations.count,
                 targets.count,
                 framesPerSecond
             )
@@ -109,6 +125,34 @@ struct LiveThumbnailCoordinator: Sendable {
             next: { await delivery.next() },
             stopOperation: stop
         )
+    }
+
+    private static func loadScreenCaptureKitTargets(
+        _ wanted: Set<CGWindowID>
+    ) async throws -> [Target] {
+        let content = try await SCShareableContent
+            .excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        return content.windows.compactMap { window in
+            guard wanted.contains(window.windowID) else { return nil }
+            let boxed = UncheckedLiveWindow(window)
+            return Target(windowID: window.windowID) {
+                maxPixel,
+                framesPerSecond,
+                delivery,
+                diagnostics in
+                let handle = try await Self.startStream(
+                    for: boxed.value,
+                    maxPixel: maxPixel,
+                    framesPerSecond: framesPerSecond,
+                    delivery: delivery,
+                    diagnostics: diagnostics
+                )
+                return {
+                    handle.output.stop()
+                    try? await handle.stream.stopCapture()
+                }
+            }
+        }
     }
 
     static func shouldPublish(frameStatus: SCFrameStatus) -> Bool {
