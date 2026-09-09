@@ -1,16 +1,19 @@
-import AppKit
 import CoreGraphics
-import SwiftUI
+import Foundation
 
-/// Owns the full-screen overlay panel and the per-summon snapshot lifecycle:
+/// Coordinates presentation and the per-summon snapshot lifecycle:
 /// summon → fetch AeroSpace state → present → publish captures → act/dismiss.
 @MainActor
-final class OverlayController: NSObject, NSWindowDelegate {
-    private var panel: OverlayPanel?
+final class OverlayController {
+    typealias ContentLoader = @Sendable (AeroSpaceClient?, Bool) async -> OverlayContent
+
+    private let presenter: any OverlayPresenting
     private let lifetime = OverlayLifetime()
     private var client: AeroSpaceClient?
-    private let oneShotCapture = OneShotCaptureService()
-    private let liveThumbnails = LiveThumbnailCoordinator()
+    private let discoverClient: @MainActor () -> AeroSpaceClient?
+    private let loadContent: ContentLoader
+    private let oneShotCapture: OneShotCaptureService
+    private let liveThumbnails: LiveThumbnailCoordinator
     private let frameCache = FrameCacheStore()
     private let diagnostics = CaptureDiagnostics()
     private let resourceSampler = ProcessResourceSampler()
@@ -18,20 +21,37 @@ final class OverlayController: NSObject, NSWindowDelegate {
     /// the windows behind the panel while a new per-summon capture arrives.
     private var desktopBackgrounds: [CGDirectDisplayID: CGImage] = [:]
     private var diagnosticsEnabled: Bool
-    private weak var currentViewModel: OverlayViewModel?
+    private var currentViewModel: OverlayViewModel?
     private var showEmptyWorkspaces: Bool
 
-    var isVisible: Bool { panel?.isVisible ?? false }
+    var isVisible: Bool { presenter.isVisible }
     var isDiagnosticsEnabled: Bool { diagnosticsEnabled }
     var isShowingEmptyWorkspaces: Bool { showEmptyWorkspaces }
 
-    init(diagnosticsEnabled: Bool = false, showEmptyWorkspaces: Bool = false) {
+    init(
+        diagnosticsEnabled: Bool = false,
+        showEmptyWorkspaces: Bool = false,
+        presenter: any OverlayPresenting = OverlayPanelPresenter(),
+        oneShotCapture: OneShotCaptureService = OneShotCaptureService(),
+        liveThumbnails: LiveThumbnailCoordinator = LiveThumbnailCoordinator(),
+        discoverClient: @escaping @MainActor () -> AeroSpaceClient? = { try? AeroSpaceClient.discover() },
+        loadContent: @escaping ContentLoader = OverlayController.loadState
+    ) {
         self.diagnosticsEnabled = diagnosticsEnabled
         self.showEmptyWorkspaces = showEmptyWorkspaces
+        self.presenter = presenter
+        self.oneShotCapture = oneShotCapture
+        self.liveThumbnails = liveThumbnails
+        self.discoverClient = discoverClient
+        self.loadContent = loadContent
     }
 
     func toggle() {
-        isVisible ? hide() : show()
+        switch lifetime.phase {
+        case .idle: show()
+        case .loading, .visible: hide()
+        case .hiding: break
+        }
     }
 
     func toggleDiagnostics() {
@@ -57,54 +77,62 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        guard !isVisible else { return }
-        guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else { return }
         guard let sessionID = lifetime.beginLoading() else { return }
-        let targetDisplayID = Self.displayID(for: targetScreen)
+        guard let target = presenter.targetDisplay() else {
+            lifetime.abort(sessionID)
+            return
+        }
+        let targetDisplayID = target.displayID
         let showEmptyWorkspaces = showEmptyWorkspaces
-        if client == nil { client = try? AeroSpaceClient.discover() }
+        if client == nil { client = discoverClient() }
 
         // Present as soon as AeroSpace state is in (a few CLI round-trips);
         // captures start at the same moment and stream in one by one.
         // ScreenCaptureKit serializes much of this work, so placeholders
         // cover whatever has not arrived yet.
-        let captureTask = Task { [client, oneShotCapture, liveThumbnails] in
+        let captureTask = Task { [client, loadContent, oneShotCapture, liveThumbnails] in
             let clock = ContinuousClock()
             let start = clock.now
-            let content = await Self.loadState(
-                client: client,
-                showEmptyWorkspaces: showEmptyWorkspaces
-            )
+            let content = await loadContent(client, showEmptyWorkspaces)
             guard !Task.isCancelled,
                   self.lifetime.isCurrent(sessionID, phase: .loading)
             else { return }
 
-            var stream: AsyncStream<CaptureEvent>?
-            var windowCount = 0
-            if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
-                let windowIDs = snapshot.allWindowIDs
-                windowCount = windowIDs.count
-                stream = oneShotCapture.captureStream(
-                    for: windowIDs,
-                    maxPixel: 320,
-                    desktopDisplayID: targetDisplayID
-                )
-            }
-            self.diagnostics.prepareSummon(
-                windowIDs: stream == nil ? [] : content.windowIDsForDiagnostics
-            )
             let stateDone = clock.now
-
-            guard let viewModel = self.present(content, displayID: targetDisplayID) else {
+            let viewModel = self.makeViewModel(content, displayID: targetDisplayID, sessionID: sessionID)
+            guard self.presenter.present(viewModel, on: target, onDismiss: { [weak self] in
+                guard self?.lifetime.isCurrent(sessionID, phase: .visible) == true else { return }
+                self?.hide()
+            }) else {
+                self.presenter.clear()
                 self.lifetime.abort(sessionID)
                 return
             }
-            guard self.lifetime.markVisible(sessionID) else { return }
+            guard self.lifetime.markVisible(sessionID) else {
+                self.presenter.clear()
+                return
+            }
+            self.currentViewModel = viewModel
+            let captureSnapshot: OverlaySnapshot?
+            if case .snapshot(let snapshot) = content, !snapshot.permissionDenied {
+                captureSnapshot = snapshot
+            } else {
+                captureSnapshot = nil
+            }
+            self.diagnostics.prepareSummon(windowIDs: captureSnapshot?.allWindowIDs ?? [])
             if self.diagnosticsEnabled {
                 self.startDiagnosticsSession(viewModel: viewModel, sessionID: sessionID)
             }
 
-            guard let stream else { return }
+            // An eager capture producer must have a successfully presented
+            // session and a consumer that owns its cancellation.
+            guard let captureSnapshot else { return }
+            let windowCount = captureSnapshot.allWindowIDs.count
+            let stream = oneShotCapture.captureStream(
+                for: captureSnapshot.allWindowIDs,
+                maxPixel: 320,
+                desktopDisplayID: targetDisplayID
+            )
             guard let captured = await OverlayCaptureConsumer.consumeOneShotEvents(
                 stream,
                 content: content,
@@ -158,26 +186,24 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func hide() {
-        guard let panel, isVisible else { return }
+        if lifetime.phase == .loading, let sessionID = lifetime.currentSessionID {
+            lifetime.abort(sessionID)
+            return
+        }
         guard let sessionID = lifetime.beginHiding() else { return }
         stopDiagnosticsSession(sessionID: sessionID, logSummary: true)
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.12
-            panel.animator().alphaValue = 0
-        }, completionHandler: {
-            MainActor.assumeIsolated {
-                guard self.lifetime.finishHiding(sessionID) else { return }
-                panel.orderOut(nil)
-                self.currentViewModel = nil
-            }
-        })
+        presenter.dismiss { [weak self] in
+            guard let self, self.lifetime.finishHiding(sessionID) else { return }
+            self.presenter.clear()
+            self.currentViewModel = nil
+        }
     }
 
-    // MARK: - State assembly (off the main actor; CLI calls block briefly)
+    // MARK: - State assembly
 
-    private nonisolated static func loadState(
-        client: AeroSpaceClient?,
-        showEmptyWorkspaces: Bool
+    nonisolated static func loadState(
+        _ client: AeroSpaceClient?,
+        _ showEmptyWorkspaces: Bool
     ) async -> OverlayContent {
         guard let client else {
             return .error("aerospace CLI not found.\nIs AeroSpace installed? (brew install --cask nikitabobko/tap/aerospace)")
@@ -197,20 +223,24 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     // MARK: - Presentation
 
-    @discardableResult
-    private func present(
+    private func makeViewModel(
         _ content: OverlayContent,
-        displayID: CGDirectDisplayID?
-    ) -> OverlayViewModel? {
-        let screen = displayID.flatMap { wanted in
-            NSScreen.screens.first(where: { Self.displayID(for: $0) == wanted })
-        } ?? NSScreen.main ?? NSScreen.screens.first
-        guard let screen else { return nil }
-
+        displayID: CGDirectDisplayID?,
+        sessionID: OverlayLifetime.SessionID
+    ) -> OverlayViewModel {
         let actions = OverlayActions(
-            dismiss: { [weak self] in self?.hide() },
-            selectWorkspace: { [weak self] name in self?.perform { try await $0.switchToWorkspace(name) } },
-            focusWindow: { [weak self] id in self?.perform { try await $0.focusWindow(id: id) } }
+            dismiss: { [weak self] in
+                guard self?.lifetime.isCurrent(sessionID, phase: .visible) == true else { return }
+                self?.hide()
+            },
+            selectWorkspace: { [weak self] name in
+                guard self?.lifetime.isCurrent(sessionID, phase: .visible) == true else { return }
+                self?.perform { try await $0.switchToWorkspace(name) }
+            },
+            focusWindow: { [weak self] id in
+                guard self?.lifetime.isCurrent(sessionID, phase: .visible) == true else { return }
+                self?.perform { try await $0.focusWindow(id: id) }
+            }
         )
 
         let viewModel = OverlayViewModel(
@@ -218,7 +248,6 @@ final class OverlayController: NSObject, NSWindowDelegate {
             actions: actions,
             desktopBackground: displayID.flatMap { desktopBackgrounds[$0] }
         )
-        currentViewModel = viewModel
         if case .snapshot(let snapshot) = content {
             for workspace in snapshot.workspaces {
                 if let layout = frameCache.layout(for: workspace) {
@@ -226,22 +255,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 }
             }
         }
-        let panel = self.panel ?? makePanel()
-        self.panel = panel
-        panel.setFrame(screen.frame, display: true)
-        panel.onKey = { [viewModel] event in viewModel.handle(event) }
-        panel.contentView = NSHostingView(rootView: OverlayRootView(viewModel: viewModel))
-        panel.alphaValue = 0
-        panel.makeKeyAndOrderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
-            panel.animator().alphaValue = 1
-        }
         return viewModel
-    }
-
-    private static func displayID(for screen: NSScreen) -> CGDirectDisplayID? {
-        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 
     // MARK: - Diagnostics
@@ -318,6 +332,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
             stopDiagnosticsSession(sessionID: sessionID, logSummary: true)
         }
         lifetime.shutdown()
+        presenter.clear()
         currentViewModel = nil
     }
 
@@ -356,45 +371,4 @@ final class OverlayController: NSObject, NSWindowDelegate {
         lifetime.replacePostActionTask(postActionTask)
     }
 
-    private func makePanel() -> OverlayPanel {
-        let panel = OverlayPanel(
-            contentRect: .zero,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.level = .popUpMenu
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.delegate = self
-        panel.onCancel = { [weak self] in self?.hide() }
-        return panel
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        hide()
-    }
-}
-
-/// Borderless panels refuse key status by default; the overlay needs it for
-/// Esc and keyboard navigation.
-final class OverlayPanel: NSPanel {
-    var onCancel: (() -> Void)?
-    var onKey: ((NSEvent) -> Bool)?
-
-    override var canBecomeKey: Bool { true }
-
-    override func cancelOperation(_ sender: Any?) {
-        onCancel?()
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if onKey?(event) != true {
-            super.keyDown(with: event) // lets Esc reach cancelOperation
-        }
-    }
 }

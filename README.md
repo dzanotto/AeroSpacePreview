@@ -73,6 +73,11 @@ continues running without a global hotkey. The menu-bar command can still open t
 | Enter | Switch to the selected workspace |
 | Esc or click the backdrop | Dismiss without an action |
 
+Pressing Hyper+S again while workspace state is loading cancels that pending overlay. Once the
+overlay is visible, the same shortcut dismisses it and stops thumbnail updates immediately.
+Further toggles are ignored during the short dismissal fade; the overlay can reopen after the
+fade finishes. It also dismisses when another window receives keyboard focus.
+
 By default, the overlay includes every occupied workspace plus the focused workspace when it is
 empty. Enable Show Empty Workspaces from the menu-bar item to include every AeroSpace workspace;
 the choice persists across launches. Workspaces use AeroSpace's natural name order. Workspace

@@ -41,10 +41,17 @@ selected infrastructure boundaries.
 `HotKeyManager`, and `StatusItemController`. It also starts a ScreenCaptureKit warm-up task so
 the first overlay does not pay the full first-use cost.
 
-`OverlayController` is main-actor isolated. It owns the panel, AeroSpace client, one-shot and
-live-thumbnail capture services, frame cache, and diagnostics. `OverlayLifetime` models the
-active summon as `idle`, `loading`, `visible`, or `hiding` and owns its capture, live-stream, and
-diagnostics tasks. Opaque session IDs reject callbacks that arrive after dismissal or shutdown.
+`OverlayController` is main-actor isolated. It coordinates state loading, presentation, capture,
+and actions, and owns the AeroSpace client, one-shot and live-thumbnail capture services, frame
+cache, wallpaper cache, diagnostics, and current view model. `OverlayPanelPresenter` owns the
+AppKit panel, display selection, SwiftUI hosting view, keyboard callbacks, and presentation and
+dismissal animations. The controller accepts CLI discovery, a content loader, a presenter, and
+concrete capture services through its initializer so tests can exercise the workflow with
+controlled inputs.
+
+`OverlayLifetime` is the sole session owner. It models the active summon as `idle`, `loading`,
+`visible`, or `hiding` and owns its capture, live-stream, and diagnostics tasks. Opaque session
+IDs reject callbacks that arrive after dismissal or shutdown, including animation completions.
 A successful workspace/window action and its post-switch layout harvest deliberately outlive
 normal dismissal as one application-owned task; replacement or application shutdown cancels the
 whole workflow. `OverlayViewModel` owns per-summon presentation state. The SwiftUI layer renders
@@ -67,20 +74,29 @@ overlay for `--show-on-launch`.
 
 Summoning follows this sequence:
 
-1. Select the focused display, create a new lifecycle session, and reject duplicate summons
-   unless the lifetime is idle.
+1. Create a new lifecycle session only while idle, then select the focused display.
 2. Fetch AeroSpace state.
-3. Create the eager one-shot capture stream when Screen Recording is available.
-4. Present the panel immediately with placeholders and any cached wallpaper/layouts.
+3. Present the panel immediately with placeholders and any cached wallpaper/layouts. If no
+   display is available or presentation fails, return to idle without starting pixel capture.
+4. After successful presentation, create the eager one-shot capture stream when Screen Recording
+   is available.
 5. Apply frame geometry, a fresh wallpaper, and window stills as they arrive.
 6. After the one-shot pass finishes, start live streams for the same window set.
 7. Stop the one-shot consumer and every live stream when the overlay dismisses or the app exits;
    session identity prevents their late results from reaching a replacement view model.
 
 The panel dismisses on Escape, a backdrop click, loss of key status, a repeated toggle, or a
-workspace/window action. Actions dismiss first, invoke the CLI asynchronously, and harvest the
-revealed layout after success. This complete post-action workflow survives ordinary dismissal
-but is cancelled when replaced or when the application exits.
+workspace/window action. A toggle during `loading` cancels the pending summon and returns to
+`idle`; its eventual state result cannot present an overlay. A toggle during `visible` begins
+dismissal, disables input, detaches input callbacks, and stops capture immediately. Toggles during
+`hiding` are ignored until the fade completes. The presenter then detaches the hosting view, and
+the controller clears its current view model. A cancelled capture consumer can retain that view
+model until it exits. The wallpaper and layout caches survive ordinary dismissal. Shutdown
+tears down presentation immediately and permanently rejects new work.
+
+Actions dismiss first, invoke the CLI asynchronously, and harvest the revealed layout after
+success. This complete post-action workflow survives ordinary dismissal but is cancelled when
+replaced or when the application exits.
 
 ## AeroSpace integration
 
@@ -229,7 +245,14 @@ frame-status filtering, callback conversion and coalescing, keyed delivery, and 
 calculations. Infrastructure tests cover subprocess output, exit handling, timeout, cancellation,
 and output limits.
 
-The concrete ScreenCaptureKit adapters, permissions, AppKit panel lifecycle, menu integration,
-and physical resource usage still require integration or manual testing on macOS. Tests should
-lock project semantics without claiming guarantees that the public ScreenCaptureKit API does not
-make.
+Controller workflow tests use a controlled content loader and presenter plus the capture
+services' existing injection points. They exercise loading cancellation, progressive capture,
+fallbacks, dismissal, shutdown, and rejection of stale results without invoking the CLI or
+requesting Screen Recording permission. An AppKit presenter test attaches and clears hosted
+content without displaying a full-screen panel, verifying that teardown releases its view model
+and input callbacks.
+
+The concrete ScreenCaptureKit adapters, permissions, visible AppKit animations and focus behavior,
+global hotkeys, menu integration, and physical resource usage still require integration or manual
+testing on macOS. Tests should lock project semantics without claiming guarantees that the public
+ScreenCaptureKit API does not make.

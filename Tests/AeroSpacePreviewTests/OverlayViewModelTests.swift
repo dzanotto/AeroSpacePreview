@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreGraphics
 import Testing
 @testable import AeroSpacePreview
@@ -118,7 +119,27 @@ import Testing
         #expect(viewModel.handle(keyEvent(keyCode: 0, characters: "m")))
         #expect(viewModel.typedPrefix == "m")
 
-        try await Task.sleep(for: .milliseconds(50))
+        // Wait for the published reset: another main-actor test may briefly
+        // delay both the reset task and this test beyond their sleep deadlines.
+        let resets = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let subscription = viewModel.$typedPrefix.sink { prefix in
+            if prefix.isEmpty { resets.continuation.yield(()) }
+        }
+        defer {
+            subscription.cancel()
+            resets.continuation.finish()
+        }
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await _ in resets.stream { return }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(3))
+                throw PrefixResetTimeout()
+            }
+            _ = try await group.next()
+            group.cancelAll()
+        }
         #expect(viewModel.typedPrefix.isEmpty)
     }
 
@@ -169,6 +190,8 @@ import Testing
         )!
     }
 }
+
+private struct PrefixResetTimeout: Error {}
 
 @MainActor
 private final class OverlayActionRecorder {
